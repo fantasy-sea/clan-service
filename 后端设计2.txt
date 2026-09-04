@@ -1,0 +1,292 @@
+# Backend Phase 1：Device 模块
+
+请在 `backend/` 目录中按照项目既定架构实现第一阶段 Device 模块。
+
+## 技术约束
+
+- Spring Boot 4.1.1
+- Java 21
+- Maven
+- MySQL 8.x
+- Spring Data JPA
+- Hibernate
+- Flyway
+- Spring Validation
+- Spring Web
+- Spring WebSocket 依赖可以加入，但本阶段不要实现 WebSocket 业务
+- 不使用 Lombok
+- Java DTO 优先使用 record
+- Entity 使用普通 Java class
+- 时间统一使用 `Instant`
+- 数据库时间使用 `DATETIME(6)`
+- 数据库结构只允许 Flyway 管理
+- `spring.jpa.hibernate.ddl-auto=validate`
+
+## 目录
+
+创建：
+
+```text
+backend/
+├── pom.xml
+├── src/main/java/com/remoteassist/
+│   ├── RemoteAssistApplication.java
+│   ├── common/
+│   │   ├── exception/
+│   │   │   ├── BusinessException.java
+│   │   │   ├── ErrorCode.java
+│   │   │   └── GlobalExceptionHandler.java
+│   │   ├── response/
+│   │   │   └── ApiResponse.java
+│   │   └── security/
+│   │       ├── DeviceTokenService.java
+│   │       ├── DeviceTokenServiceImpl.java
+│   │       └── DeviceAuthenticationInterceptor.java
+│   │
+│   └── device/
+│       ├── controller/
+│       │   └── DeviceController.java
+│       ├── dto/
+│       │   ├── RegisterDeviceRequest.java
+│       │   ├── RegisterDeviceResponse.java
+│       │   └── DeviceResponse.java
+│       ├── entity/
+│       │   ├── Device.java
+│       │   └── DevicePlatform.java
+│       ├── repository/
+│       │   └── DeviceRepository.java
+│       └── service/
+│           ├── DeviceService.java
+│           └── DeviceServiceImpl.java
+│
+└── src/main/resources/
+    ├── application.yml
+    └── db/migration/
+        └── V1__init.sql
+```
+
+## 数据库
+
+V1 只创建：
+
+```text
+devices
+```
+
+不要提前创建：
+
+```text
+pairing_codes
+device_bindings
+remote_sessions
+```
+
+这些属于后续 Flyway migration。
+
+## Device 字段
+
+```text
+id
+device_name
+platform
+model
+android_version
+device_token_hash
+online
+last_seen_at
+created_at
+updated_at
+```
+
+## API
+
+### 注册设备
+
+```http
+POST /api/v1/devices/register
+```
+
+Request：
+
+```json
+{
+  "deviceName": "爸爸的手机",
+  "platform": "ANDROID",
+  "model": "Pixel 8",
+  "androidVersion": "16"
+}
+```
+
+成功后生成：
+
+```text
+deviceId
+deviceToken
+```
+
+数据库只保存：
+
+```text
+SHA-256(deviceToken)
+```
+
+绝对不能保存 raw deviceToken。
+
+### 查询当前设备
+
+```http
+GET /api/v1/devices/me
+Authorization: Bearer <deviceToken>
+```
+
+Token 由 `DeviceAuthenticationInterceptor` 解析。
+
+Controller 不允许自己解析 Token。
+
+## API Response
+
+统一：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {}
+}
+```
+
+## 错误处理
+
+统一使用：
+
+```text
+BusinessException
+ErrorCode
+GlobalExceptionHandler
+```
+
+至少实现：
+
+```text
+INVALID_PARAMETER
+INVALID_DEVICE_TOKEN
+DEVICE_NOT_FOUND
+INTERNAL_ERROR
+```
+
+## Service 规则
+
+Controller 不允许直接访问 Repository。
+
+必须：
+
+```text
+Controller
+    ↓
+Service
+    ↓
+Repository
+```
+
+Controller 只负责 HTTP / DTO。
+
+Service 负责业务逻辑。
+
+Repository 只负责数据访问。
+
+## Entity 规则
+
+禁止 Controller 直接返回 Entity。
+
+必须：
+
+```text
+Entity
+ ↓
+Response DTO
+ ↓
+ApiResponse
+```
+
+`DeviceResponse` 中绝对不能包含：
+
+```text
+deviceToken
+deviceTokenHash
+```
+
+## ID
+
+Device ID 使用：
+
+```text
+dev_{ULID}
+```
+
+## Token
+
+使用安全随机数生成 Token。
+
+Token Hash 使用 SHA-256。
+
+## Transaction
+
+写操作使用：
+
+```java
+@Transactional
+```
+
+查询使用：
+
+```java
+@Transactional(readOnly = true)
+```
+
+## Flyway
+
+使用：
+
+```text
+src/main/resources/db/migration/V1__init.sql
+```
+
+禁止使用：
+
+```text
+ddl-auto=update
+```
+
+## 完成标准
+
+执行：
+
+```bash
+./mvnw clean test
+```
+
+必须成功。
+
+执行：
+
+```bash
+./mvnw spring-boot:run
+```
+
+必须正常启动。
+
+启动后 Flyway 必须自动创建：
+
+```text
+flyway_schema_history
+devices
+```
+
+完成后请输出：
+
+1. 实际创建的文件列表
+2. 每个文件的作用
+3. API 使用方式
+4. `curl` 测试命令
+5. 测试结果
+6. 如果存在无法验证的问题，明确列出，不要假设成功。

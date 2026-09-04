@@ -1,0 +1,2887 @@
+# 家庭远程助手
+# MVP 服务端架构设计
+
+## 1. 技术栈
+
+### Backend
+
+- Spring Boot
+- Java
+- Spring Web
+- Spring WebSocket
+- Spring Validation
+- Spring Data JPA
+- MySQL 8.x
+- Jackson
+- Lombok（如果项目允许）
+- Flyway（数据库迁移）
+
+### 实时通信
+
+```text
+WebSocket
+```
+
+用于：
+
+- 设备在线状态
+- 远程协助请求
+- Session 状态
+- 控制命令
+- WebRTC Signaling
+
+### 实时视频
+
+```text
+WebRTC
+```
+
+服务器只负责：
+
+```text
+SDP Offer
+SDP Answer
+ICE Candidate
+```
+
+服务器默认不处理视频流。
+
+### NAT 穿透
+
+```text
+STUN
+TURN
+```
+
+STUN/TURN 独立于 Spring Boot Backend。
+
+---
+
+# 2. 总体架构
+
+```text
+                         Internet
+                            │
+                ┌───────────┴───────────┐
+                │                       │
+                ▼                       ▼
+        ┌─────────────────┐      ┌──────────────┐
+        │  Spring Boot    │      │ STUN / TURN  │
+        │                 │      │              │
+        │ REST API        │      │ WebRTC NAT   │
+        │ WebSocket       │      │ Traversal    │
+        │ Pairing         │      └──────────────┘
+        │ Device          │
+        │ Binding         │
+        │ Session         │
+        │ Signaling       │
+        └────────┬────────┘
+                 │
+                 ▼
+            ┌─────────┐
+            │  MySQL  │
+            └─────────┘
+
+
+          手机 A                         手机 B
+      Controller                       Agent
+           │                              │
+           │────── WebSocket ────────────►│
+           │                              │
+           │◄───── WebSocket ─────────────│
+           │                              │
+           │                              │
+           │◄════════ WebRTC ═════════════│
+           │      Screen Video            │
+           │                              │
+```
+
+核心原则：
+
+```text
+REST
+    ↓
+设备、配对、绑定、Session 等业务操作
+
+WebSocket
+    ↓
+实时状态、控制命令、Signaling
+
+WebRTC
+    ↓
+屏幕视频
+
+STUN / TURN
+    ↓
+帮助 WebRTC 建立连接
+```
+
+---
+
+# 3. Spring Boot 项目目录
+
+推荐使用按业务领域拆分，而不是单纯按照 Controller / Service / Entity 分类。
+
+```text
+backend/
+│
+├── pom.xml
+│
+├── src/
+│   ├── main/
+│   │
+│   │   ├── java/
+│   │   │   └── com/
+│   │   │       └── example/
+│   │   │           └── remoteassist/
+│   │   │
+│   │   │               ├── RemoteAssistApplication.java
+│   │   │
+│   │   │               ├── common/
+│   │   │               │   ├── exception/
+│   │   │               │   ├── response/
+│   │   │               │   ├── validation/
+│   │   │               │   └── util/
+│   │   │               │
+│   │   │               ├── device/
+│   │   │               │   ├── controller/
+│   │   │               │   ├── service/
+│   │   │               │   ├── repository/
+│   │   │               │   ├── entity/
+│   │   │               │   └── dto/
+│   │   │               │
+│   │   │               ├── pairing/
+│   │   │               │   ├── controller/
+│   │   │               │   ├── service/
+│   │   │               │   ├── repository/
+│   │   │               │   ├── entity/
+│   │   │               │   └── dto/
+│   │   │               │
+│   │   │               ├── binding/
+│   │   │               │   ├── controller/
+│   │   │               │   ├── service/
+│   │   │               │   ├── repository/
+│   │   │               │   ├── entity/
+│   │   │               │   └── dto/
+│   │   │               │
+│   │   │               ├── session/
+│   │   │               │   ├── controller/
+│   │   │               │   ├── service/
+│   │   │               │   ├── repository/
+│   │   │               │   ├── entity/
+│   │   │               │   ├── dto/
+│   │   │               │   └── state/
+│   │   │               │
+│   │   │               ├── websocket/
+│   │   │               │   ├── config/
+│   │   │               │   ├── handler/
+│   │   │               │   ├── manager/
+│   │   │               │   ├── interceptor/
+│   │   │               │   └── message/
+│   │   │               │
+│   │   │               └── signaling/
+│   │   │                   ├── service/
+│   │   │                   └── dto/
+│   │   │
+│   │   └── resources/
+│   │       ├── application.yml
+│   │       │
+│   │       └── db/
+│   │           └── migration/
+│   │               ├── V1__init.sql
+│   │               ├── V2__create_pairing_codes.sql
+│   │               ├── V3__create_bindings.sql
+│   │               └── V4__create_sessions.sql
+│   │
+│   └── test/
+│
+└── README.md
+```
+
+---
+
+# 4. 核心领域模型
+
+服务端核心对象：
+
+```text
+Device
+   │
+   ├──────── PairingCode
+   │
+   └──────── DeviceBinding
+                    │
+                    ▼
+               RemoteSession
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+     Controller              Agent
+          │                   │
+          │                   │
+          │             MediaProjection
+          │                   │
+          └──── WebRTC ───────┘
+```
+
+---
+
+# 5. Device
+
+设备不是 Controller，也不是 Agent。
+
+设备只是：
+
+```text
+Device
+```
+
+建立 Session 后才获得角色。
+
+```java
+public enum RemoteRole {
+    CONTROLLER,
+    AGENT
+}
+```
+
+例如：
+
+```text
+Session A
+
+你的手机
+    role = CONTROLLER
+
+父母手机
+    role = AGENT
+```
+
+未来控制权切换：
+
+```text
+你的手机
+    role = AGENT
+
+父母手机
+    role = CONTROLLER
+```
+
+因此数据库不要在 `devices` 表中保存：
+
+```text
+role
+```
+
+角色属于：
+
+```text
+remote_sessions
+```
+
+---
+
+# 6. MySQL 数据库
+
+MVP 核心只需要 4 张表：
+
+```text
+devices
+pairing_codes
+device_bindings
+remote_sessions
+```
+
+---
+
+# 7. devices
+
+```sql
+CREATE TABLE devices (
+    id VARCHAR(64) PRIMARY KEY,
+
+    device_name VARCHAR(128) NOT NULL,
+
+    platform VARCHAR(32) NOT NULL DEFAULT 'ANDROID',
+
+    model VARCHAR(128),
+
+    android_version VARCHAR(64),
+
+    device_token_hash VARCHAR(128) NOT NULL,
+
+    online BOOLEAN NOT NULL DEFAULT FALSE,
+
+    last_seen_at DATETIME NULL,
+
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_device_token_hash (device_token_hash),
+
+    INDEX idx_devices_online (online)
+);
+```
+
+---
+
+# 8. pairing_codes
+
+匹配码不是永久密码。
+
+默认：
+
+```text
+6 位数字
+5 分钟有效
+成功后立即失效
+```
+
+数据库：
+
+```sql
+CREATE TABLE pairing_codes (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+
+    device_id VARCHAR(64) NOT NULL,
+
+    code_hash VARCHAR(128) NOT NULL,
+
+    expires_at DATETIME NOT NULL,
+
+    used_at DATETIME NULL,
+
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_pairing_device
+        FOREIGN KEY (device_id)
+        REFERENCES devices(id),
+
+    INDEX idx_pairing_code_hash (code_hash),
+
+    INDEX idx_pairing_device (device_id),
+
+    INDEX idx_pairing_expires (expires_at)
+);
+```
+
+注意：
+
+不要保存：
+
+```text
+582941
+```
+
+这种明文匹配码。
+
+保存：
+
+```text
+hash(582941)
+```
+
+---
+
+# 9. device_bindings
+
+表示：
+
+> 两台设备已经成为可信的家庭设备。
+
+```sql
+CREATE TABLE device_bindings (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+
+    device_a_id VARCHAR(64) NOT NULL,
+
+    device_b_id VARCHAR(64) NOT NULL,
+
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_binding_device_a
+        FOREIGN KEY (device_a_id)
+        REFERENCES devices(id),
+
+    CONSTRAINT fk_binding_device_b
+        FOREIGN KEY (device_b_id)
+        REFERENCES devices(id),
+
+    UNIQUE KEY uk_device_binding (
+        device_a_id,
+        device_b_id
+    )
+);
+```
+
+建议业务层对：
+
+```text
+A → B
+B → A
+```
+
+进行规范化。
+
+例如永远：
+
+```text
+device_a_id < device_b_id
+```
+
+这样避免出现：
+
+```text
+A B
+
+B A
+```
+
+被数据库认为是两个 Binding。
+
+---
+
+# 10. remote_sessions
+
+这是整个远程协助系统的核心表。
+
+```sql
+CREATE TABLE remote_sessions (
+    id VARCHAR(64) PRIMARY KEY,
+
+    controller_device_id VARCHAR(64) NOT NULL,
+
+    agent_device_id VARCHAR(64) NOT NULL,
+
+    status VARCHAR(32) NOT NULL,
+
+    control_device_id VARCHAR(64) NOT NULL,
+
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    accepted_at DATETIME NULL,
+
+    connected_at DATETIME NULL,
+
+    ended_at DATETIME NULL,
+
+    CONSTRAINT fk_session_controller
+        FOREIGN KEY (controller_device_id)
+        REFERENCES devices(id),
+
+    CONSTRAINT fk_session_agent
+        FOREIGN KEY (agent_device_id)
+        REFERENCES devices(id),
+
+    CONSTRAINT fk_session_control_device
+        FOREIGN KEY (control_device_id)
+        REFERENCES devices(id),
+
+    INDEX idx_session_controller (
+        controller_device_id
+    ),
+
+    INDEX idx_session_agent (
+        agent_device_id
+    ),
+
+    INDEX idx_session_status (
+        status
+    )
+);
+```
+
+---
+
+# 11. Session Status
+
+```java
+public enum SessionStatus {
+
+    REQUESTING,
+
+    ACCEPTED,
+
+    CONNECTING,
+
+    CONNECTED,
+
+    REJECTED,
+
+    ENDED,
+
+    FAILED
+}
+```
+
+完整状态：
+
+```text
+REQUESTING
+     │
+     ├──────────────► REJECTED
+     │
+     ▼
+ACCEPTED
+     │
+     ▼
+CONNECTING
+     │
+     ├──────────────► FAILED
+     │
+     ▼
+CONNECTED
+     │
+     ▼
+ENDED
+```
+
+---
+
+# 12. REST API 总览
+
+```text
+Device
+
+POST   /api/v1/devices/register
+GET    /api/v1/devices/me
+PATCH  /api/v1/devices/me
+DELETE /api/v1/devices/me
+
+
+Pairing
+
+POST   /api/v1/pairing/codes
+POST   /api/v1/pairing/verify
+
+
+Binding
+
+GET    /api/v1/bindings
+DELETE /api/v1/bindings/{deviceId}
+
+
+Session
+
+POST   /api/v1/sessions
+GET    /api/v1/sessions/{sessionId}
+POST   /api/v1/sessions/{sessionId}/accept
+POST   /api/v1/sessions/{sessionId}/reject
+POST   /api/v1/sessions/{sessionId}/end
+```
+
+实时通信：
+
+```text
+WSS /ws
+```
+
+---
+
+# 13. Device 注册
+
+## Request
+
+```http
+POST /api/v1/devices/register
+Content-Type: application/json
+```
+
+```json
+{
+  "deviceName": "爸爸的手机",
+  "platform": "ANDROID",
+  "model": "Pixel 8",
+  "androidVersion": "16"
+}
+```
+
+## Response
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "deviceId": "dev_01JABC",
+    "deviceToken": "xxxxxxxxxxxxxxxx"
+  }
+}
+```
+
+`deviceToken` 只在注册时返回。
+
+Android 客户端应该安全保存。
+
+---
+
+# 14. Device Token
+
+以后 REST：
+
+```http
+Authorization: Bearer <deviceToken>
+```
+
+WebSocket：
+
+```text
+wss://api.example.com/ws?token=xxxxxxxx
+```
+
+更推荐：
+
+```text
+WebSocket 建立后
+    ↓
+AUTH 消息
+```
+
+避免 Token 长期出现在 URL、日志或者代理层。
+
+---
+
+# 15. 获取当前设备
+
+```http
+GET /api/v1/devices/me
+Authorization: Bearer <deviceToken>
+```
+
+Response：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "deviceId": "dev_01JABC",
+    "deviceName": "爸爸的手机",
+    "platform": "ANDROID",
+    "model": "Pixel 8",
+    "androidVersion": "16",
+    "online": true
+  }
+}
+```
+
+---
+
+# 16. 创建匹配码
+
+```http
+POST /api/v1/pairing/codes
+Authorization: Bearer <deviceToken>
+```
+
+Response：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "pairingCode": "582941",
+    "expiresIn": 300
+  }
+}
+```
+
+这里需要注意：
+
+API 可以返回明文匹配码，因为这是刚刚生成给当前用户看的。
+
+数据库绝对不要保存明文。
+
+---
+
+# 17. 验证匹配码
+
+```http
+POST /api/v1/pairing/verify
+Authorization: Bearer <deviceToken>
+```
+
+Request：
+
+```json
+{
+  "pairingCode": "582941"
+}
+```
+
+服务端：
+
+```text
+验证匹配码
+    ↓
+验证有效期
+    ↓
+验证 used_at
+    ↓
+获取目标 Device
+    ↓
+不能绑定自己
+    ↓
+创建 Binding
+    ↓
+pairing code 设置 used_at
+```
+
+Response：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "device": {
+      "deviceId": "dev_parent_001",
+      "deviceName": "爸爸的手机",
+      "online": true
+    },
+    "bindingId": "binding_001"
+  }
+}
+```
+
+---
+
+# 18. 获取家庭设备
+
+```http
+GET /api/v1/bindings
+Authorization: Bearer <deviceToken>
+```
+
+Response：
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "deviceId": "dev_parent_001",
+      "deviceName": "爸爸的手机",
+      "online": true,
+      "lastSeenAt": "2026-09-01T16:30:00"
+    },
+    {
+      "deviceId": "dev_mom_001",
+      "deviceName": "妈妈的手机",
+      "online": false,
+      "lastSeenAt": "2026-08-31T21:20:00"
+    }
+  ]
+}
+```
+
+---
+
+# 19. 创建 RemoteSession
+
+例如：
+
+```text
+你的手机
+    ↓
+请求控制
+    ↓
+爸爸手机
+```
+
+请求：
+
+```http
+POST /api/v1/sessions
+Authorization: Bearer <deviceToken>
+```
+
+```json
+{
+  "targetDeviceId": "dev_parent_001"
+}
+```
+
+服务器必须检查：
+
+```text
+1. 当前 Device 是否存在
+2. Target Device 是否存在
+3. 两台 Device 是否 Binding
+4. Target 是否在线
+5. 是否已有 ACTIVE Session
+```
+
+成功：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "sessionId": "session_001",
+    "controllerDeviceId": "dev_me",
+    "agentDeviceId": "dev_parent_001",
+    "status": "REQUESTING"
+  }
+}
+```
+
+---
+
+# 20. RemoteSession 建立后的角色
+
+例如：
+
+```text
+controllerDeviceId
+    = dev_me
+
+agentDeviceId
+    = dev_parent
+```
+
+同时：
+
+```text
+controlDeviceId
+    = dev_me
+```
+
+代表：
+
+```text
+dev_me
+    ↓
+拥有控制权
+```
+
+---
+
+# 21. 为什么需要 controlDeviceId
+
+因为未来支持控制权切换。
+
+开始：
+
+```text
+controller = A
+agent = B
+
+controlDevice = A
+```
+
+切换：
+
+```text
+controller = A
+agent = B
+
+controlDevice = B
+```
+
+甚至未来可以重新设计成：
+
+```text
+screenSourceDevice
+controlDevice
+```
+
+两个独立维度。
+
+这样可以支持：
+
+```text
+A 看 B
+B 控制 A
+```
+
+这种更复杂的模式。
+
+MVP 暂时保持：
+
+```text
+controller = controlDevice
+agent = screenSourceDevice
+```
+
+---
+
+# 22. Accept Session
+
+父母手机收到：
+
+```text
+REMOTE_REQUEST
+```
+
+点击：
+
+```text
+允许
+```
+
+调用：
+
+```http
+POST /api/v1/sessions/{sessionId}/accept
+Authorization: Bearer <deviceToken>
+```
+
+服务器必须验证：
+
+```text
+当前 Device == agentDeviceId
+```
+
+不能让第三方接受 Session。
+
+状态：
+
+```text
+REQUESTING
+      ↓
+ACCEPTED
+```
+
+同时通过 WebSocket 通知 Controller：
+
+```json
+{
+  "type": "SESSION_ACCEPTED",
+  "sessionId": "session_001",
+  "payload": {}
+}
+```
+
+---
+
+# 23. Reject Session
+
+```http
+POST /api/v1/sessions/{sessionId}/reject
+```
+
+只有：
+
+```text
+agentDeviceId
+```
+
+可以 Reject。
+
+状态：
+
+```text
+REQUESTING
+      ↓
+REJECTED
+```
+
+---
+
+# 24. End Session
+
+任意参与 Session 的设备都可以结束自己的远程协助。
+
+```http
+POST /api/v1/sessions/{sessionId}/end
+```
+
+状态：
+
+```text
+CONNECTED
+     ↓
+ENDED
+```
+
+同时：
+
+```text
+停止 WebRTC
+停止远程控制
+通知另一端
+```
+
+---
+
+# 25. WebSocket
+
+Spring Boot 不建议 MVP 使用 STOMP。
+
+直接使用：
+
+```text
+WebSocketHandler
+```
+
+即可。
+
+原因：
+
+```text
+Android
+   ↓
+JSON
+   ↓
+Spring WebSocket
+```
+
+协议简单、可控。
+
+---
+
+# 26. WebSocket 连接
+
+```text
+wss://api.example.com/ws
+```
+
+建立连接以后第一条消息：
+
+```json
+{
+  "type": "AUTH",
+  "requestId": "req_001",
+  "payload": {
+    "deviceToken": "xxxxxxxx"
+  }
+}
+```
+
+服务器验证：
+
+```text
+deviceToken
+    ↓
+device
+    ↓
+建立 Device ↔ WebSocketSession
+```
+
+服务器内部：
+
+```java
+Map<String, WebSocketSession>
+```
+
+概念：
+
+```text
+deviceId
+    ↓
+WebSocketSession
+```
+
+---
+
+# 27. WebSocket 消息统一格式
+
+所有消息：
+
+```json
+{
+  "type": "MESSAGE_TYPE",
+  "requestId": "req_xxx",
+  "sessionId": "session_xxx",
+  "timestamp": 1756700000000,
+  "payload": {}
+}
+```
+
+字段：
+
+| 字段 | 说明 |
+|---|---|
+| type | 消息类型 |
+| requestId | 请求 ID |
+| sessionId | Session ID |
+| timestamp | 客户端发送时间 |
+| payload | 消息内容 |
+
+---
+
+# 28. WebSocket 消息类型
+
+## Connection
+
+```text
+AUTH
+AUTH_SUCCESS
+AUTH_FAILED
+PING
+PONG
+```
+
+## Device
+
+```text
+DEVICE_ONLINE
+DEVICE_OFFLINE
+```
+
+## Session
+
+```text
+REMOTE_REQUEST
+REMOTE_ACCEPT
+REMOTE_REJECT
+
+SESSION_ACCEPTED
+SESSION_REJECTED
+SESSION_ENDED
+SESSION_FAILED
+```
+
+## WebRTC
+
+```text
+WEBRTC_OFFER
+WEBRTC_ANSWER
+ICE_CANDIDATE
+```
+
+## Control
+
+```text
+CONTROL
+CONTROL_RESULT
+```
+
+## Permission
+
+```text
+PERMISSION_STATUS
+```
+
+---
+
+# 29. REMOTE_REQUEST
+
+```json
+{
+  "type": "REMOTE_REQUEST",
+  "requestId": "req_001",
+  "sessionId": "session_001",
+  "timestamp": 1756700000000,
+  "payload": {
+    "fromDeviceId": "dev_me",
+    "fromDeviceName": "我的手机"
+  }
+}
+```
+
+服务器只允许转发给：
+
+```text
+agentDeviceId
+```
+
+---
+
+# 30. SESSION_ACCEPTED
+
+```json
+{
+  "type": "SESSION_ACCEPTED",
+  "sessionId": "session_001",
+  "payload": {
+    "agentDeviceId": "dev_parent_001"
+  }
+}
+```
+
+收到以后 Controller 开始：
+
+```text
+WebRTC PeerConnection
+```
+
+---
+
+# 31. WEBRTC_OFFER
+
+Controller 创建：
+
+```text
+RTCPeerConnection
+```
+
+然后：
+
+```text
+createOffer()
+```
+
+发送：
+
+```json
+{
+  "type": "WEBRTC_OFFER",
+  "sessionId": "session_001",
+  "payload": {
+    "sdp": "v=0..."
+  }
+}
+```
+
+服务器：
+
+```text
+验证 Session
+    ↓
+验证 sender
+    ↓
+转发 Agent
+```
+
+服务器不解析 SDP 内容。
+
+---
+
+# 32. WEBRTC_ANSWER
+
+Agent：
+
+```text
+setRemoteDescription(offer)
+
+createAnswer()
+
+setLocalDescription(answer)
+```
+
+发送：
+
+```json
+{
+  "type": "WEBRTC_ANSWER",
+  "sessionId": "session_001",
+  "payload": {
+    "sdp": "v=0..."
+  }
+}
+```
+
+服务器转发给 Controller。
+
+---
+
+# 33. ICE_CANDIDATE
+
+双方都会发送：
+
+```json
+{
+  "type": "ICE_CANDIDATE",
+  "sessionId": "session_001",
+  "payload": {
+    "candidate": "...",
+    "sdpMid": "0",
+    "sdpMLineIndex": 0
+  }
+}
+```
+
+服务器：
+
+```text
+不保存
+不解析
+不修改
+
+直接转发
+```
+
+---
+
+# 34. CONTROL
+
+例如点击：
+
+```json
+{
+  "type": "CONTROL",
+  "requestId": "req_100",
+  "sessionId": "session_001",
+  "payload": {
+    "action": "TAP",
+    "x": 0.512,
+    "y": 0.438
+  }
+}
+```
+
+服务器检查：
+
+```text
+Session 存在
+        ↓
+Session == CONNECTED
+        ↓
+sender 属于 Session
+        ↓
+sender == controlDeviceId
+        ↓
+通过
+        ↓
+转发 Agent
+```
+
+---
+
+# 35. Swipe
+
+```json
+{
+  "type": "CONTROL",
+  "sessionId": "session_001",
+  "payload": {
+    "action": "SWIPE",
+    "startX": 0.5,
+    "startY": 0.75,
+    "endX": 0.5,
+    "endY": 0.25,
+    "duration": 500
+  }
+}
+```
+
+统一使用：
+
+```text
+0.0 ~ 1.0
+```
+
+归一化坐标。
+
+这样 Android 端不需要关心另一台手机的实际分辨率。
+
+---
+
+# 36. Back / Home / Recents
+
+Back：
+
+```json
+{
+  "type": "CONTROL",
+  "sessionId": "session_001",
+  "payload": {
+    "action": "BACK"
+  }
+}
+```
+
+Home：
+
+```json
+{
+  "type": "CONTROL",
+  "sessionId": "session_001",
+  "payload": {
+    "action": "HOME"
+  }
+}
+```
+
+Recents：
+
+```json
+{
+  "type": "CONTROL",
+  "sessionId": "session_001",
+  "payload": {
+    "action": "RECENTS"
+  }
+}
+```
+
+---
+
+# 37. Permission Status
+
+Agent 可以主动发送：
+
+```json
+{
+  "type": "PERMISSION_STATUS",
+  "sessionId": "session_001",
+  "payload": {
+    "screenCapture": true,
+    "accessibility": true
+  }
+}
+```
+
+Controller 根据这个状态显示：
+
+```text
+屏幕共享    ✓
+远程操作    ✓
+```
+
+如果：
+
+```text
+accessibility = false
+```
+
+Controller 显示：
+
+```text
+父母手机尚未开启远程操作权限
+```
+
+---
+
+# 38. WebSocket ConnectionManager
+
+核心结构：
+
+```text
+ConnectionManager
+
+deviceId
+    ↓
+WebSocketSession
+```
+
+例如：
+
+```text
+dev_A → session_A
+dev_B → session_B
+dev_C → session_C
+```
+
+提供：
+
+```java
+connect(deviceId, session)
+
+disconnect(deviceId)
+
+sendToDevice(deviceId, message)
+
+isOnline(deviceId)
+```
+
+---
+
+# 39. WebSocket Handler
+
+推荐：
+
+```text
+RemoteWebSocketHandler
+```
+
+职责：
+
+```text
+收到消息
+    ↓
+解析 JSON
+    ↓
+验证 Device
+    ↓
+根据 type 分发
+    ↓
+调用对应 Service
+```
+
+不要把业务逻辑全部写进：
+
+```text
+WebSocketHandler
+```
+
+例如：
+
+```text
+WebSocketHandler
+      ↓
+SessionService
+      ↓
+ConnectionManager
+```
+
+---
+
+# 40. 消息处理结构
+
+推荐：
+
+```text
+RemoteWebSocketHandler
+          │
+          ▼
+MessageRouter
+          │
+     ┌────┼───────────────┐
+     ▼    ▼               ▼
+Session  Control       Signaling
+Handler  Handler        Handler
+```
+
+例如：
+
+```text
+CONTROL
+    ↓
+ControlMessageHandler
+    ↓
+SessionService.validateControl()
+    ↓
+ConnectionManager.sendToDevice()
+```
+
+---
+
+# 41. WebRTC Signaling 时序图
+
+完整流程：
+
+```text
+Controller                  Server                  Agent
+    │                          │                      │
+    │ POST /sessions           │                      │
+    │─────────────────────────►│                      │
+    │                          │                      │
+    │                          │ REMOTE_REQUEST       │
+    │                          │─────────────────────►│
+    │                          │                      │
+    │                          │       用户点击允许    │
+    │                          │◄─────────────────────│
+    │                          │                      │
+    │ SESSION_ACCEPTED         │                      │
+    │◄─────────────────────────│                      │
+    │                          │                      │
+    │ createOffer()            │                      │
+    │                          │                      │
+    │ WEBRTC_OFFER             │                      │
+    │─────────────────────────►│                      │
+    │                          │                      │
+    │                          │ WEBRTC_OFFER         │
+    │                          │─────────────────────►│
+    │                          │                      │
+    │                          │              setRemoteDescription
+    │                          │              createAnswer
+    │                          │                      │
+    │                          │◄─────────────────────│
+    │                          │     WEBRTC_ANSWER    │
+    │                          │                      │
+    │ WEBRTC_ANSWER             │                      │
+    │◄─────────────────────────│                      │
+    │                          │                      │
+    │ ICE_CANDIDATE             │                      │
+    │─────────────────────────►│                      │
+    │                          │─────────────────────►│
+    │                          │                      │
+    │                          │◄─────────────────────│
+    │◄─────────────────────────│    ICE_CANDIDATE     │
+    │                          │                      │
+    │═════════════════════════════════════════════════│
+    │                  WebRTC                         │
+    │◄════════════════════════════════════════════════│
+    │                Video Track                      │
+```
+
+---
+
+# 42. WebRTC 中真正的数据路径
+
+建立成功之后：
+
+```text
+Agent 手机
+    │
+    │ MediaProjection
+    ▼
+Screen Capture
+    │
+    ▼
+WebRTC VideoTrack
+    │
+    │
+    ═══════════════════════════════►
+                              Controller 手机
+```
+
+服务器：
+
+```text
+不接收视频
+不保存视频
+不转发视频
+```
+
+正常情况下：
+
+```text
+Server
+    │
+    └── Signaling only
+```
+
+---
+
+# 43. TURN 情况
+
+如果两个设备无法 P2P：
+
+```text
+Agent
+   │
+   │ WebRTC
+   ▼
+ TURN Server
+   │
+   ▼
+Controller
+```
+
+这时视频会经过 TURN。
+
+因此：
+
+```text
+Backend
+```
+
+和：
+
+```text
+TURN Server
+```
+
+必须作为两个独立组件理解。
+
+---
+
+# 44. Session 建立完整时序
+
+```text
+Controller
+    │
+    │ POST /sessions
+    ▼
+Backend
+    │
+    │ 创建 Session
+    │ status = REQUESTING
+    │
+    │ REMOTE_REQUEST
+    ▼
+Agent
+    │
+    │ 用户点击「允许」
+    │
+    │ POST /sessions/{id}/accept
+    ▼
+Backend
+    │
+    │ status = ACCEPTED
+    │
+    │ SESSION_ACCEPTED
+    ▼
+Controller
+    │
+    │ createOffer()
+    │
+    │ WEBRTC_OFFER
+    ▼
+Backend
+    │
+    │ WEBRTC_OFFER
+    ▼
+Agent
+    │
+    │ createAnswer()
+    │
+    │ WEBRTC_ANSWER
+    ▼
+Backend
+    │
+    │ WEBRTC_ANSWER
+    ▼
+Controller
+    │
+    │ ICE exchange
+    │
+    ▼
+WebRTC CONNECTED
+    │
+    ▼
+Backend 更新：
+status = CONNECTED
+```
+
+---
+
+# 45. Session CONNECTED 的判断
+
+不要仅仅因为：
+
+```text
+WEBRTC_OFFER
+WEBRTC_ANSWER
+```
+
+交换成功就认为 Session 已连接。
+
+Android 客户端应该发送：
+
+```json
+{
+  "type": "SESSION_CONNECTED",
+  "sessionId": "session_001",
+  "payload": {}
+}
+```
+
+服务器收到后：
+
+```text
+status = CONNECTED
+connected_at = NOW()
+```
+
+这样服务器知道：
+
+> 真正的 WebRTC 连接已经建立。
+
+---
+
+# 46. Session 断开
+
+WebRTC 出现：
+
+```text
+DISCONNECTED
+FAILED
+CLOSED
+```
+
+Android 客户端发送：
+
+```json
+{
+  "type": "SESSION_ENDED",
+  "sessionId": "session_001",
+  "payload": {
+    "reason": "WEBRTC_DISCONNECTED"
+  }
+}
+```
+
+服务器：
+
+```text
+status = ENDED
+ended_at = NOW()
+```
+
+同时通知另一端。
+
+---
+
+# 47. Control 权限
+
+服务器必须始终知道：
+
+```text
+controlDeviceId
+```
+
+例如：
+
+```text
+Session
+
+controllerDeviceId = A
+agentDeviceId = B
+controlDeviceId = A
+```
+
+A 可以：
+
+```text
+CONTROL
+```
+
+B 不可以。
+
+如果 B 发送：
+
+```text
+CONTROL
+```
+
+服务器返回：
+
+```json
+{
+  "type": "ERROR",
+  "sessionId": "session_001",
+  "payload": {
+    "code": "CONTROL_NOT_ALLOWED",
+    "message": "Device does not own control"
+  }
+}
+```
+
+---
+
+# 48. 未来控制权切换
+
+未来增加：
+
+```text
+CONTROL_SWITCH_REQUEST
+CONTROL_SWITCH_ACCEPT
+CONTROL_SWITCHED
+```
+
+例如：
+
+```text
+A 控制 B
+
+controlDeviceId = A
+```
+
+请求切换：
+
+```text
+B → A
+```
+
+服务器：
+
+```text
+验证 Session
+    ↓
+验证 B
+    ↓
+更新 controlDeviceId
+    ↓
+通知 A/B
+```
+
+新的状态：
+
+```text
+controlDeviceId = B
+```
+
+这样无需重新建立：
+
+```text
+Device Binding
+```
+
+也无需创建新的：
+
+```text
+Session
+```
+
+---
+
+# 49. REST Response 统一格式
+
+成功：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {}
+}
+```
+
+失败：
+
+```json
+{
+  "code": 40001,
+  "message": "Pairing code expired",
+  "data": null
+}
+```
+
+建议错误码：
+
+```text
+40001 INVALID_PARAMETER
+40002 INVALID_DEVICE_TOKEN
+40003 DEVICE_NOT_FOUND
+
+40101 PAIRING_CODE_INVALID
+40102 PAIRING_CODE_EXPIRED
+40103 PAIRING_CODE_USED
+
+40201 BINDING_NOT_FOUND
+40202 BINDING_ALREADY_EXISTS
+
+40301 SESSION_NOT_FOUND
+40302 SESSION_INVALID_STATE
+40303 SESSION_NOT_ALLOWED
+40304 CONTROL_NOT_ALLOWED
+
+50001 INTERNAL_ERROR
+```
+
+---
+
+# 50. DTO 设计
+
+不要让 Controller 直接接收 Entity。
+
+例如：
+
+```text
+DeviceEntity
+```
+
+不能直接作为：
+
+```text
+RegisterDeviceRequest
+```
+
+应该：
+
+```text
+Controller
+    ↓
+Request DTO
+    ↓
+Service
+    ↓
+Entity
+```
+
+---
+
+# 51. RegisterDeviceRequest
+
+```java
+public record RegisterDeviceRequest(
+
+    @NotBlank
+    @Size(max = 128)
+    String deviceName,
+
+    @NotBlank
+    String platform,
+
+    @Size(max = 128)
+    String model,
+
+    @Size(max = 64)
+    String androidVersion
+
+) {}
+```
+
+---
+
+# 52. CreatePairingCodeResponse
+
+```java
+public record CreatePairingCodeResponse(
+
+    String pairingCode,
+
+    long expiresIn
+
+) {}
+```
+
+---
+
+# 53. VerifyPairingCodeRequest
+
+```java
+public record VerifyPairingCodeRequest(
+
+    @NotBlank
+    @Pattern(regexp = "\\d{6}")
+    String pairingCode
+
+) {}
+```
+
+---
+
+# 54. CreateSessionRequest
+
+```java
+public record CreateSessionRequest(
+
+    @NotBlank
+    String targetDeviceId
+
+) {}
+```
+
+---
+
+# 55. WebSocket Message DTO
+
+统一：
+
+```java
+public record WebSocketMessage(
+
+    String type,
+
+    String requestId,
+
+    String sessionId,
+
+    Long timestamp,
+
+    JsonNode payload
+
+) {}
+```
+
+使用：
+
+```text
+Jackson JsonNode
+```
+
+处理不同 payload。
+
+不要为了每一种 WebSocket 消息创建几十层继承关系。
+
+---
+
+# 56. 服务层
+
+核心 Service：
+
+```text
+DeviceService
+PairingService
+BindingService
+SessionService
+SignalingService
+ConnectionManager
+```
+
+---
+
+# 57. DeviceService
+
+负责：
+
+```text
+register()
+getDevice()
+updateDevice()
+markOnline()
+markOffline()
+updateLastSeen()
+```
+
+不负责：
+
+```text
+Session
+Pairing
+WebRTC
+```
+
+---
+
+# 58. PairingService
+
+负责：
+
+```text
+createCode()
+verifyCode()
+consumeCode()
+```
+
+完整逻辑：
+
+```text
+createCode
+    ↓
+生成 SecureRandom 6 位数字
+    ↓
+hash
+    ↓
+保存
+```
+
+验证：
+
+```text
+输入 code
+    ↓
+hash
+    ↓
+数据库查询
+    ↓
+验证 expires_at
+    ↓
+验证 used_at
+    ↓
+consume
+```
+
+---
+
+# 59. BindingService
+
+负责：
+
+```text
+createBinding()
+getBindings()
+removeBinding()
+isBound(deviceA, deviceB)
+```
+
+任何 Session 建立之前必须：
+
+```text
+isBound(A, B)
+```
+
+---
+
+# 60. SessionService
+
+核心：
+
+```text
+createSession()
+acceptSession()
+rejectSession()
+endSession()
+validateControl()
+switchControl()
+```
+
+Session 状态只能通过 Service 修改。
+
+禁止 Controller：
+
+```text
+session.setStatus(...)
+```
+
+---
+
+# 61. SignalingService
+
+负责：
+
+```text
+handleOffer()
+handleAnswer()
+handleIceCandidate()
+```
+
+但是它不应该负责：
+
+```text
+Session 创建
+Device Binding
+权限判断
+```
+
+这些由：
+
+```text
+SessionService
+```
+
+完成。
+
+---
+
+# 62. ConnectionManager
+
+维护：
+
+```text
+Device → WebSocket
+```
+
+例如：
+
+```java
+ConcurrentHashMap<String, WebSocketSession>
+```
+
+提供：
+
+```java
+sendToDevice(
+    String deviceId,
+    WebSocketMessage message
+);
+```
+
+如果目标设备离线：
+
+```text
+sendToDevice()
+    ↓
+false
+```
+
+业务层决定：
+
+```text
+设备离线
+```
+
+而不是 ConnectionManager 自己决定业务逻辑。
+
+---
+
+# 63. 在线状态
+
+WebSocket：
+
+```text
+CONNECTED
+```
+
+时：
+
+```text
+devices.online = true
+last_seen_at = NOW()
+```
+
+断开：
+
+```text
+devices.online = false
+```
+
+同时：
+
+```text
+DEVICE_OFFLINE
+```
+
+通知相关设备。
+
+---
+
+# 64. 心跳
+
+客户端：
+
+```text
+PING
+```
+
+服务器：
+
+```text
+PONG
+```
+
+例如：
+
+```json
+{
+  "type": "PING",
+  "timestamp": 1756700000000,
+  "payload": {}
+}
+```
+
+服务器：
+
+```json
+{
+  "type": "PONG",
+  "timestamp": 1756700000100,
+  "payload": {}
+}
+```
+
+建议 Android 客户端定期发送心跳。
+
+---
+
+# 65. WebSocket 安全
+
+服务器必须检查：
+
+```text
+AUTH
+    ↓
+Device Token
+    ↓
+Device
+    ↓
+WebSocketSession
+```
+
+以后每个消息：
+
+```text
+WebSocketSession
+       ↓
+当前 Device
+       ↓
+Session 权限
+```
+
+不能相信客户端发送的：
+
+```json
+{
+  "fromDeviceId": "dev_xxx"
+}
+```
+
+真正的 sender 必须来自：
+
+```text
+WebSocketSession
+```
+
+而不是 payload。
+
+这是非常重要的安全规则。
+
+---
+
+# 66. CONTROL 安全检查
+
+服务器收到：
+
+```text
+CONTROL
+```
+
+必须执行：
+
+```text
+WebSocketSession
+       ↓
+获取 senderDeviceId
+       ↓
+获取 session
+       ↓
+Session.status == CONNECTED
+       ↓
+sender 属于 Session
+       ↓
+sender == controlDeviceId
+       ↓
+target == agentDeviceId
+       ↓
+转发
+```
+
+任何一步失败：
+
+```text
+拒绝
+```
+
+---
+
+# 67. Pairing Code 防暴力破解
+
+6 位数字只有：
+
+```text
+1,000,000
+```
+
+种组合。
+
+所以必须限流。
+
+例如：
+
+```text
+同一 Device
+    ↓
+1 分钟最多 5 次验证
+
+同一 IP
+    ↓
+1 分钟最多 N 次
+```
+
+连续失败可以增加冷却时间。
+
+MVP 即使暂时不引入 Redis，也应该在 Service 中预留：
+
+```text
+PairingRateLimiter
+```
+
+接口。
+
+以后再使用 Redis 实现。
+
+---
+
+# 68. 不要把屏幕视频放进 Spring Boot
+
+禁止：
+
+```text
+MediaProjection
+    ↓
+JPEG
+    ↓
+HTTP
+    ↓
+Spring Boot
+    ↓
+WebSocket
+    ↓
+Controller
+```
+
+正确：
+
+```text
+MediaProjection
+    ↓
+WebRTC
+    ↓
+Controller
+```
+
+Spring Boot：
+
+```text
+只负责 Signaling
+```
+
+---
+
+# 69. MVP 部署
+
+第一阶段：
+
+```text
+                 Internet
+                     │
+              ┌──────▼──────┐
+              │    Nginx    │
+              └──────┬──────┘
+                     │
+             ┌───────▼────────┐
+             │  Spring Boot   │
+             │                │
+             │ REST           │
+             │ WebSocket      │
+             │ Signaling      │
+             └───────┬────────┘
+                     │
+                 ┌───▼───┐
+                 │ MySQL │
+                 └───────┘
+
+
+               ┌─────────────┐
+               │ STUN / TURN │
+               └─────────────┘
+```
+
+MVP 不需要：
+
+```text
+Kubernetes
+微服务
+Kafka
+RabbitMQ
+Service Mesh
+```
+
+---
+
+# 70. 后续扩展 Redis
+
+当：
+
+```text
+Spring Boot Server
+```
+
+从：
+
+```text
+1 台
+```
+
+扩展到：
+
+```text
+N 台
+```
+
+再增加：
+
+```text
+Redis
+```
+
+用于：
+
+```text
+Device Online State
+WebSocket Routing
+Pub/Sub
+Rate Limit
+Session Cache
+```
+
+架构：
+
+```text
+                  Load Balancer
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+       Spring Boot A       Spring Boot B
+             │                   │
+             └─────────┬─────────┘
+                       ▼
+                    Redis
+                       │
+                       ▼
+                    MySQL
+```
+
+---
+
+# 71. MVP 开发顺序
+
+不要一次让 Codex 实现全部服务端。
+
+推荐：
+
+## Phase 1：项目骨架
+
+实现：
+
+```text
+Spring Boot
+MySQL
+Flyway
+统一 Response
+异常处理
+Device Token
+```
+
+验收：
+
+```text
+POST /devices/register
+```
+
+可以工作。
+
+---
+
+## Phase 2：Pairing
+
+实现：
+
+```text
+POST /pairing/codes
+POST /pairing/verify
+```
+
+完成：
+
+```text
+Device A
+    ↓
+Pairing Code
+    ↓
+Device B
+    ↓
+Binding
+```
+
+---
+
+## Phase 3：Device List
+
+实现：
+
+```text
+GET /bindings
+```
+
+同时实现：
+
+```text
+WebSocket
+DEVICE_ONLINE
+DEVICE_OFFLINE
+```
+
+---
+
+## Phase 4：Session
+
+实现：
+
+```text
+POST /sessions
+POST /sessions/{id}/accept
+POST /sessions/{id}/reject
+POST /sessions/{id}/end
+```
+
+先不要接 WebRTC。
+
+先确保：
+
+```text
+REQUESTING
+    ↓
+ACCEPTED
+    ↓
+ENDED
+```
+
+完全正确。
+
+---
+
+## Phase 5：WebSocket
+
+实现：
+
+```text
+AUTH
+
+REMOTE_REQUEST
+SESSION_ACCEPTED
+SESSION_REJECTED
+
+SESSION_ENDED
+```
+
+确保两个 Android 可以实时收到消息。
+
+---
+
+## Phase 6：WebRTC Signaling
+
+实现：
+
+```text
+WEBRTC_OFFER
+WEBRTC_ANSWER
+ICE_CANDIDATE
+```
+
+然后接 Android：
+
+```text
+PeerConnection
+```
+
+---
+
+## Phase 7：CONTROL
+
+实现：
+
+```text
+CONTROL
+```
+
+支持：
+
+```text
+TAP
+SWIPE
+BACK
+HOME
+RECENTS
+```
+
+并完成：
+
+```text
+Session 权限检查
+Control 权限检查
+```
+
+---
+
+# 72. MVP 最终数据流
+
+完整链路：
+
+```text
+                    Spring Boot
+                         │
+             ┌───────────┼───────────┐
+             │           │           │
+          Pairing     Session     Signaling
+             │           │           │
+             ▼           ▼           ▼
+           MySQL       MySQL      WebSocket
+                                     │
+                       ┌─────────────┴─────────────┐
+                       │                           │
+                       ▼                           ▼
+                   Controller                    Agent
+                       │                           │
+                       │                           │
+                       │       WebRTC              │
+                       │◄══════════════════════════│
+                       │                           │
+                       │                           │
+                       │ WebSocket CONTROL         │
+                       │──────────────────────────►│
+                       │                           │
+                       │                     Accessibility
+                       │                           │
+                       │                     MediaProjection
+                       │                           │
+                       │◄══════ Screen Video ═════│
+```
+
+---
+
+# 73. MVP 核心原则
+
+整个服务端必须始终遵守以下原则：
+
+```text
+1. Device ≠ User
+
+2. Device ≠ Controller / Agent
+
+3. Role 属于 RemoteSession
+
+4. Pairing Code 只负责第一次建立关系
+
+5. Binding 负责长期设备关系
+
+6. Session 负责一次远程协助
+
+7. WebSocket 负责实时控制和 Signaling
+
+8. WebRTC 负责实时屏幕
+
+9. Spring Boot 不接收屏幕视频
+
+10. TURN 独立于业务服务器
+
+11. CONTROL 必须经过 Session 权限验证
+
+12. 客户端发送的 deviceId 不能作为身份依据
+
+13. Device 身份必须来自 WebSocket Authentication
+
+14. Android 权限必须由系统授权
+
+15. Session 必须可以被参与设备主动结束
+```
+
+---
+
+# 74. 最终项目结构
+
+最终推荐：
+
+```text
+remote-assist/
+│
+├── android/
+│   └── ...
+│
+├── backend/
+│   ├── pom.xml
+│   │
+│   └── src/main/
+│       ├── java/com/example/remoteassist/
+│       │
+│       │   ├── device/
+│       │   ├── pairing/
+│       │   ├── binding/
+│       │   ├── session/
+│       │   ├── websocket/
+│       │   ├── signaling/
+│       │   └── common/
+│       │
+│       └── resources/
+│           ├── application.yml
+│           └── db/migration/
+│
+├── deploy/
+│   ├── docker-compose.yml
+│   ├── nginx/
+│   └── turn/
+│
+├── docs/
+│   ├── architecture.md
+│   ├── api.md
+│   ├── websocket-protocol.md
+│   └── webrtc-signaling.md
+│
+└── AGENTS.md
+```
+
+---
+
+# 75. Codex 实现时的第一阶段任务边界
+
+如果让 Codex 开始开发服务端，第一阶段只要求：
+
+```text
+Spring Boot 项目初始化
++
+MySQL
++
+Flyway
++
+Device Entity
++
+Device Repository
++
+Device Service
++
+Device Controller
++
+Device Token
++
+POST /api/v1/devices/register
++
+GET /api/v1/devices/me
+```
+
+暂时不要实现：
+
+```text
+Pairing
+WebSocket
+WebRTC
+Session
+TURN
+```
+
+等 Device 模块验证通过以后，再进入下一阶段。
