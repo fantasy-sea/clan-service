@@ -44,3 +44,7 @@ application-local.yml
 *.jks
 *.p12
 *.keystore
+
+# Versioned profile templates/configuration (the global Git ignore may ignore all YAML).
+!src/main/resources/application-prod.yml
+!src/main/resources/application-tls.yml

@@ -7,4 +7,5 @@ class BusinessException(
     val errorCode: ErrorCode,
     message: String? = null,
     cause: Throwable? = null,
+    val retryAfterSeconds: Long? = null,
 ) : RuntimeException(message ?: errorCode.defaultMessage, cause)

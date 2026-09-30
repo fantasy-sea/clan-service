@@ -1,16 +1,18 @@
-# Test profile: H2 in-memory database, no Flyway, no schema validation.
-# Real MySQL / Flyway are exercised only when running the app itself.
 spring:
   datasource:
-    url: jdbc:h2:mem:clan-service-test;MODE=MySQL;DB_CLOSE_DELAY=-1
+    url: jdbc:h2:mem:clan_test;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
     username: sa
-    password: ""
+    password:
     driver-class-name: org.h2.Driver
-
-  jpa:
-    hibernate:
-      ddl-auto: none
-    open-in-view: false
-
   flyway:
     enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+
+clan:
+  pairing:
+    hmac-key: test-pairing-hmac-key-that-is-at-least-32-bytes
+  websocket:
+    container-enabled: false

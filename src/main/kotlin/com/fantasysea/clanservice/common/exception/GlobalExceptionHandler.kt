@@ -3,6 +3,7 @@ package com.fantasysea.clanservice.common.exception
 import com.fantasysea.clanservice.common.response.ApiResponse
 import org.slf4j.LoggerFactory
 import org.springframework.http.ResponseEntity
+import org.springframework.http.HttpHeaders
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -15,10 +16,11 @@ class GlobalExceptionHandler {
     private val log = LoggerFactory.getLogger(GlobalExceptionHandler::class.java)
 
     @ExceptionHandler(BusinessException::class)
-    fun handleBusinessException(ex: BusinessException): ResponseEntity<ApiResponse<Nothing>> =
-        ResponseEntity
-            .status(ex.errorCode.httpStatus)
-            .body(ApiResponse.error(ex.errorCode.code, ex.message ?: ex.errorCode.defaultMessage))
+    fun handleBusinessException(ex: BusinessException): ResponseEntity<ApiResponse<Nothing>> {
+        val builder = ResponseEntity.status(ex.errorCode.httpStatus)
+        ex.retryAfterSeconds?.let { builder.header(HttpHeaders.RETRY_AFTER, it.toString()) }
+        return builder.body(ApiResponse.error(ex.errorCode.code, ex.message ?: ex.errorCode.defaultMessage))
+    }
 
     @ExceptionHandler(MethodArgumentNotValidException::class)
     fun handleMethodArgumentNotValid(ex: MethodArgumentNotValidException): ResponseEntity<ApiResponse<Nothing>> {
@@ -40,7 +42,7 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun handleHttpMessageNotReadable(ex: HttpMessageNotReadableException): ResponseEntity<ApiResponse<Nothing>> {
-        log.debug("Malformed request body", ex)
+        log.debug("Malformed request body")
         return ResponseEntity
             .status(ErrorCode.INVALID_PARAMETER.httpStatus)
             .body(ApiResponse.error(ErrorCode.INVALID_PARAMETER.code, "Malformed request body"))
@@ -48,7 +50,7 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception::class)
     fun handleUnexpected(ex: Exception): ResponseEntity<ApiResponse<Nothing>> {
-        log.error("Unexpected error", ex)
+        log.error("Unexpected error type={}", ex.javaClass.simpleName)
         return ResponseEntity
             .status(ErrorCode.INTERNAL_ERROR.httpStatus)
             .body(ApiResponse.error(ErrorCode.INTERNAL_ERROR.code, ErrorCode.INTERNAL_ERROR.defaultMessage))

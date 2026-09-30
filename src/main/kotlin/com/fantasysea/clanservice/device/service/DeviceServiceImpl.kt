@@ -11,7 +11,7 @@ import com.fantasysea.clanservice.device.dto.UpdateDeviceRequest
 import com.fantasysea.clanservice.device.entity.Device
 import com.fantasysea.clanservice.device.entity.DevicePlatform
 import com.fantasysea.clanservice.device.repository.DeviceRepository
-import java.time.Instant
+import java.time.Clock
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -20,6 +20,8 @@ class DeviceServiceImpl(
     private val deviceRepository: DeviceRepository,
     private val deviceTokenService: DeviceTokenService,
     private val ulidGenerator: UlidGenerator,
+    private val deletionCoordinator: DeviceDeletionCoordinator? = null,
+    private val clock: Clock = Clock.systemUTC(),
 ) : DeviceService {
 
     @Transactional
@@ -63,26 +65,28 @@ class DeviceServiceImpl(
 
     @Transactional
     override fun deleteDevice(deviceId: String) {
-        deviceRepository.delete(findEntity(deviceId))
+        val device = findEntity(deviceId)
+        deletionCoordinator?.notifyAfterDelete(deviceId)
+        deviceRepository.delete(device)
     }
 
     @Transactional
     override fun markOnline(deviceId: String) {
         val device = findEntity(deviceId)
         device.online = true
-        device.lastSeenAt = Instant.now()
+        device.lastSeenAt = clock.instant()
     }
 
     @Transactional
     override fun markOffline(deviceId: String) {
         val device = findEntity(deviceId)
         device.online = false
-        device.lastSeenAt = Instant.now()
+        device.lastSeenAt = clock.instant()
     }
 
     @Transactional
     override fun updateLastSeen(deviceId: String) {
-        findEntity(deviceId).lastSeenAt = Instant.now()
+        findEntity(deviceId).lastSeenAt = clock.instant()
     }
 
     private fun findEntity(deviceId: String): Device =

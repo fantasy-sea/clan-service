@@ -1,0 +1,7 @@
+server:
+  ssl:
+    enabled: true
+    key-store: ${TLS_KEY_STORE}
+    key-store-password: ${TLS_KEY_STORE_PASSWORD}
+    key-store-type: ${TLS_KEY_STORE_TYPE:PKCS12}
+    key-alias: ${TLS_KEY_ALIAS:clan-service}

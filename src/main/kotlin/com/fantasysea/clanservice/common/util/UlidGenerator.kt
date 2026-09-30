@@ -31,21 +31,20 @@ class UlidGenerator {
     }
 
     private fun encodeBase32(bytes16: ByteArray): String {
-        // 17 字节工作缓冲区：第 17 个字节恒为 0，避免最后一位编码越界。
-        val buffer = ByteArray(17)
-        bytes16.copyInto(buffer)
+        // ULID 用 26 个 Base32 字符承载 128 位，因此编码前必须补两个高位 0。
         val sb = StringBuilder(26)
         for (i in 0 until 26) {
-            val bitPos = i * 5
-            val bytePos = bitPos / 8
-            val shift = 8 - (bitPos % 8) - 5
-            val value = if (shift >= 0) {
-                (buffer[bytePos].toInt() and 0xFF) ushr shift
-            } else {
-                ((buffer[bytePos].toInt() and 0xFF) shl -shift) or
-                    ((buffer[bytePos + 1].toInt() and 0xFF) ushr (8 + shift))
+            var value = 0
+            repeat(5) { bitInCharacter ->
+                value = value shl 1
+                val sourceBit = i * 5 + bitInCharacter - 2
+                if (sourceBit >= 0) {
+                    val byteIndex = sourceBit / 8
+                    val bitIndex = 7 - sourceBit % 8
+                    value = value or ((bytes16[byteIndex].toInt() ushr bitIndex) and 1)
+                }
             }
-            sb.append(ALPHABET[value and 0x1F])
+            sb.append(ALPHABET[value])
         }
         return sb.toString()
     }

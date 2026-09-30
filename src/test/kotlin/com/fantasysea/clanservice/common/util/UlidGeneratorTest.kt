@@ -14,6 +14,7 @@ class UlidGeneratorTest {
         assertEquals(26, ulid.length)
         assertTrue(ulid.all { it in ALPHABET }, "unexpected chars in " + ulid)
         assertTrue(ulid.none { it in "ILOU" }, "must not contain I/L/O/U")
+        assertTrue(ulid.first() in '0'..'7', "ULID's two leading padding bits must be zero")
     }
 
     @Test

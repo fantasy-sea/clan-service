@@ -17,6 +17,10 @@
 # =============================================================================
 spring:
   datasource:
-    url: jdbc:mysql://139.159.187.104:3515/2026_insreview?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8&tinyInt1isBit=false
-    username: 2026_insreview
-    password: 2VGEts8eLDJqCShznF9p
+    url:
+    username:
+    password:
+
+clan:
+  pairing:
+    hmac-key: replace-with-at-least-32-random-bytes

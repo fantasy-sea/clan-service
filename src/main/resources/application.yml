@@ -30,5 +30,11 @@ spring:
     baseline-version: 0
 
 server:
-  # 8080 在本机被占用，使用 8081；可用 SERVER_PORT 环境变量覆盖。
-  port: ${SERVER_PORT:8081}
+  # 统一默认端口为 8080；可用 SERVER_PORT 环境变量覆盖。
+  port: ${SERVER_PORT:8080}
+  forward-headers-strategy: framework
+
+clan:
+  pairing:
+    # Development-only fallback. application-prod.yml deliberately requires an external secret.
+    hmac-key: ${PAIRING_HMAC_KEY:local-development-pairing-hmac-key-change-me}
