@@ -119,6 +119,33 @@ class PairingService(
     @Transactional(noRollbackFor = [BusinessException::class])
     fun reject(deviceId: String, requestId: String): PairingRequestResponse = handle(deviceId, requestId, false)
 
+    /**
+     * 请求方取消仍处于 PENDING 的配对请求。
+     * 取消复用 REJECTED 状态，不创建绑定；双方收到 PAIRING_RESULT(REJECTED)。
+     */
+    @Transactional(noRollbackFor = [BusinessException::class])
+    fun cancel(deviceId: String, requestId: String): PairingRequestResponse {
+        val initial = requestRepository.findById(requestId).orElseThrow {
+            BusinessException(ErrorCode.PAIRING_REQUEST_NOT_FOUND)
+        }
+        deviceLockService.lockPair(initial.requesterDeviceId, initial.targetDeviceId)
+        val request = requestRepository.findByIdForUpdate(requestId)
+            ?: throw BusinessException(ErrorCode.PAIRING_REQUEST_NOT_FOUND)
+        if (deviceId != request.requesterDeviceId) throw BusinessException(ErrorCode.PAIRING_REQUEST_NOT_ALLOWED)
+        if (request.status != PairingRequestStatus.PENDING) throw BusinessException(ErrorCode.PAIRING_REQUEST_ALREADY_HANDLED)
+        val now = clock.instant()
+        if (!now.isBefore(request.expiresAt)) {
+            request.status = PairingRequestStatus.EXPIRED
+            request.handledAt = now
+            afterCommit.execute { sendPairingResult(request, "EXPIRED") }
+            throw BusinessException(ErrorCode.PAIRING_REQUEST_EXPIRED)
+        }
+        request.status = PairingRequestStatus.REJECTED
+        request.handledAt = now
+        afterCommit.execute { sendPairingResult(request, request.status.name) }
+        return PairingRequestResponse.from(request)
+    }
+
     private fun handle(deviceId: String, requestId: String, accepted: Boolean): PairingRequestResponse {
         val initial = requestRepository.findById(requestId).orElseThrow {
             BusinessException(ErrorCode.PAIRING_REQUEST_NOT_FOUND)

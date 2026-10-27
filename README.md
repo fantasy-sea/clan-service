@@ -8,7 +8,7 @@
 
 - Kotlin 2.3、Java 21 字节码目标（本机使用 Java 25 构建验证）、Spring Boot 4.1、Spring Web MVC、原生 WebSocket
 - Spring Data JPA、Hibernate（`ddl-auto=validate`）、Flyway V1–V3
-- MySQL 5.7，所有持久化时间为 UTC `DATETIME(6)`
+- MySQL 5.7，所有持久化时间为 UTC `DATETIME(6)`；Hibernate 7 默认方言会生成 MySQL 8 才支持的 `FOR UPDATE OF <alias>`，必须显式使用 `MySQL57Dialect`（见 `application.yml`），否则所有悲观锁查询（配对码生成、WebSocket 认证等）都会 1064
 - 单实例内存连接表与限流器；禁止横向扩容，不使用 STOMP、Redis、队列或离线推送
 - REST 成功统一返回 HTTP 200 和 `{code,message,data}`；受保护接口使用 `Authorization: Bearer <deviceToken>`
 
@@ -54,7 +54,8 @@ $env:SPRING_PROFILES_ACTIVE='local'
 | 当前设备 | `GET/PATCH/DELETE /api/v1/devices/me` |
 | 生成/验证配对码 | `POST /api/v1/pairing/codes`、`POST /api/v1/pairing/verify` |
 | 接受/拒绝配对 | `POST /api/v1/pairing/requests/{requestId}/accept\|reject` |
-| 绑定列表/解绑 | `GET /api/v1/bindings`、`DELETE /api/v1/bindings/{deviceId}` |
+| 取消配对 | `POST /api/v1/pairing/requests/{requestId}/cancel` |
+| 绑定列表/查询/改名/解绑 | `GET /api/v1/bindings`、`GET/PATCH/DELETE /api/v1/bindings/{deviceId}` |
 | 会话 | `POST /api/v1/sessions`、`GET /api/v1/sessions/{sessionId}` |
 | 会话操作 | `POST /api/v1/sessions/{sessionId}/accept\|reject\|end` |
 | 实时连接 | `ws://localhost:8080/ws` |

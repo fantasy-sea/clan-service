@@ -9,6 +9,7 @@ import java.time.Clock
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ScheduledFuture
+import org.slf4j.LoggerFactory
 import org.springframework.scheduling.TaskScheduler
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
@@ -30,6 +31,8 @@ class ClanWebSocketHandler(
     private val scheduler: TaskScheduler,
     private val clock: Clock,
 ) : TextWebSocketHandler() {
+    private val log = LoggerFactory.getLogger(ClanWebSocketHandler::class.java)
+
     private data class State(
         val session: WebSocketSession,
         @Volatile
@@ -92,20 +95,36 @@ class ClanWebSocketHandler(
             if (rawToken.isBlank()) throw BusinessException(ErrorCode.INVALID_DEVICE_TOKEN)
             val device = deviceRepository.findByDeviceTokenHash(tokenService.hash(rawToken))
                 ?: throw BusinessException(ErrorCode.INVALID_DEVICE_TOKEN)
-            state.authenticated = true
-            state.authTimeout?.cancel(false)
             val replacedExistingConnection = registry.register(device.id, session)
             presenceService.connected(device.id, suppressBroadcast = replacedExistingConnection)
+            // 只有注册与在线状态都写成功后才算认证完成：否则一旦写库失败，
+            // 这条连接会以「已认证」留在内存里，后续 AUTH 只会得到 ALREADY_AUTHENTICATED。
+            state.authenticated = true
+            state.authTimeout?.cancel(false)
             registry.send(device.id, WsOutboundMessage("AUTH_SUCCESS", requestId = requestId, timestamp = clock.millis(), payload = mapOf(
                 "deviceId" to device.id, "heartbeatIntervalSeconds" to 20, "idleTimeoutSeconds" to 60,
                 "reconnectGraceSeconds" to 30,
             )))
         } catch (ex: BusinessException) {
-            val payload = mutableMapOf<String, Any>("code" to ex.errorCode.code, "message" to ex.errorCode.defaultMessage)
-            ex.retryAfterSeconds?.let { payload["retryAfter"] = it }
-            sendDirect(session, WsOutboundMessage("AUTH_FAILED", requestId = requestId, timestamp = clock.millis(), payload = payload))
-            closePolicy(session, "Authentication failed")
+            failAuthentication(session, requestId, ex.errorCode, ex.retryAfterSeconds)
+        } catch (ex: Exception) {
+            // 基础设施异常（数据库/方言等）：必须回一帧 AUTH_FAILED 再关闭，
+            // 否则客户端只能干等到认证超时，与服务端日志一样看不到原因。
+            log.error("WebSocket authentication failed", ex)
+            failAuthentication(session, requestId, ErrorCode.INTERNAL_ERROR, null)
         }
+    }
+
+    private fun failAuthentication(
+        session: WebSocketSession,
+        requestId: String?,
+        errorCode: ErrorCode,
+        retryAfterSeconds: Long?,
+    ) {
+        val payload = mutableMapOf<String, Any>("code" to errorCode.code, "message" to errorCode.defaultMessage)
+        retryAfterSeconds?.let { payload["retryAfter"] = it }
+        sendDirect(session, WsOutboundMessage("AUTH_FAILED", requestId = requestId, timestamp = clock.millis(), payload = payload))
+        closePolicy(session, "Authentication failed")
     }
 
     override fun handleBinaryMessage(session: WebSocketSession, message: BinaryMessage) {

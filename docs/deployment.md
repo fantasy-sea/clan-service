@@ -51,3 +51,4 @@ location /ws {
 - 每 5 秒推进配对和会话超时；配对终态保留 24 小时，会话保留 7 天，码在过期后额外保留 10 分钟。
 - 启动会清空遗留在线状态，并用 `SERVER_RESTART` 终结遗留活动会话。
 - 发布后检查 Flyway 版本为 3、Hibernate validate 成功、`/ws` Upgrade 返回 101，且后端 8080 无法从公网直接访问。
+- 启动日志不得出现 `Pessimistic-lock SQL is rejected by the database` 或 `SQLSyntaxErrorException`（`for update of <alias>` 是 MySQL 8 语法，5.7 必须走 `MySQL57Dialect`）；再调用一次 `POST /api/v1/pairing/codes` 确认返回 200。

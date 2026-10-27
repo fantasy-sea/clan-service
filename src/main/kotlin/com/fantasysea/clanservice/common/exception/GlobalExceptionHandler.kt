@@ -50,7 +50,9 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception::class)
     fun handleUnexpected(ex: Exception): ResponseEntity<ApiResponse<Nothing>> {
-        log.error("Unexpected error type={}", ex.javaClass.simpleName)
+        // 必须带堆栈：这个分支就是 SQL/连接等基础设施问题的唯一出口，
+        // 只打印异常类名会让线上只剩一句无信息量的 "Internal server error"。
+        log.error("Unexpected error", ex)
         return ResponseEntity
             .status(ErrorCode.INTERNAL_ERROR.httpStatus)
             .body(ApiResponse.error(ErrorCode.INTERNAL_ERROR.code, ErrorCode.INTERNAL_ERROR.defaultMessage))

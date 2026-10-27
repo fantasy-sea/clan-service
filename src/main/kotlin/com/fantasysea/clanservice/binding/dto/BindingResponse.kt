@@ -12,6 +12,7 @@ data class BindingResponse(
     val online: Boolean,
     val lastSeenAt: Instant?,
     val boundAt: Instant,
+    val createdAt: Instant?,
 )
 
 data class DeviceSummary(

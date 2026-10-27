@@ -34,6 +34,9 @@ import org.testcontainers.junit.jupiter.Testcontainers
     properties = [
         "spring.flyway.enabled=true",
         "spring.jpa.hibernate.ddl-auto=validate",
+        // 测试资源里的 application.yml 不包含主配置的方言，这里显式指定：
+        // Hibernate 7 默认方言会生成 MySQL 8 的 `FOR UPDATE OF`，在 5.7 上必然 1064。
+        "spring.jpa.properties.hibernate.dialect=com.fantasysea.clanservice.common.persistence.MySQL57Dialect",
         "clan.websocket.container-enabled=false",
     ],
 )
@@ -100,6 +103,27 @@ class MySql57MigrationIT {
         assertEquals(0, jdbc.queryForObject("select count(*) from device_bindings where device_low_id = 'dev_it_a'", Int::class.java))
         assertEquals(0, jdbc.queryForObject("select count(*) from pairing_requests where id = 'pairreq_it'", Int::class.java))
         assertEquals(0, jdbc.queryForObject("select count(*) from remote_sessions where id = 'session_it'", Int::class.java))
+    }
+
+    @Test
+    fun `create pairing code locks the device row on MySQL 5_7`() {
+        val suffix = System.nanoTime().toString()
+        val deviceId = "dev_code_$suffix"
+        insertDevice(deviceId, "token-code-$suffix")
+
+        // createCode 的第一步就是 DeviceLockService.lock(deviceId)，即
+        // `select ... from devices where id=? for update`；方言不兼容时这里会 1064。
+        val response = pairingService.createCode(deviceId)
+
+        assertTrue(response.pairingCode.matches(Regex("^[0-9]{6}$")))
+        assertEquals(
+            1,
+            jdbc.queryForObject(
+                "select count(*) from pairing_codes where device_id = ? and consumed_at is null",
+                Int::class.java,
+                deviceId,
+            ),
+        )
     }
 
     @Test

@@ -4,12 +4,14 @@
 
 1. B 调用 `POST /api/v1/pairing/codes`，界面显示六位码和 60 秒倒计时。
 2. A 调用 `POST /api/v1/pairing/verify` 提交该码；B 收到 `PAIRING_REQUEST`。
-3. B 调用对应的 `/accept`；双方依次收到 `PAIRING_RESULT(ACCEPTED)` 和个性化 `PAIRING_SUCCEEDED`。双方刷新 `GET /api/v1/bindings`，确认对端摘要、在线状态和 `boundAt`。
+3. B 调用对应的 `/accept`；双方依次收到 `PAIRING_RESULT(ACCEPTED)` 和个性化 `PAIRING_SUCCEEDED`。双方刷新 `GET /api/v1/bindings`，确认对端摘要、在线状态、`boundAt` 和 `createdAt`；再用 `GET /api/v1/bindings/{对端 deviceId}` 校验单条绑定查询。A 用 `PATCH /api/v1/bindings/{对端 deviceId}` 提交新 `deviceName`，双方刷新后应看到同一个新名称。
 4. A 调用 `POST /api/v1/sessions`，B 收到 `CONTROL_REQUEST`；B 接受后双方收到 `CONTROL_RESULT` 再收到 `SESSION_STARTED`。任一方调用 `/end`，双方收到 `SESSION_ENDED`。
 
 还需验证：
 
 - 配对码过期、重放和自配对分别返回 410/409/409。
+- 请求方在等待期间调用 `/cancel`；双方弹窗关闭、收到 `PAIRING_RESULT(REJECTED)`，且不产生绑定。
+- 请求过期或任一方离线时，双方弹窗关闭并收到 `PAIRING_RESULT(EXPIRED)`。
 - 第三方不能接受配对、查询/操作会话或删除别人的绑定。
 - 同设备建立第二条 WebSocket 后旧连接收到 4001，且旧连接关闭不会把新连接标离线。
 - 断网 30 秒内恢复时不产生上下线抖动；超过 30 秒后对端收到离线和会话终结事件。

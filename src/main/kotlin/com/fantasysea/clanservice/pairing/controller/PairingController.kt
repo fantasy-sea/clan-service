@@ -35,4 +35,8 @@ class PairingController(private val pairingService: PairingService) {
     @PostMapping("/requests/{requestId}/reject")
     fun reject(@RequestAttribute(AUTHENTICATED_DEVICE_ID_ATTRIBUTE) deviceId: String, @PathVariable requestId: String): ApiResponse<PairingRequestResponse> =
         ApiResponse.success(pairingService.reject(deviceId, requestId))
+
+    @PostMapping("/requests/{requestId}/cancel")
+    fun cancel(@RequestAttribute(AUTHENTICATED_DEVICE_ID_ATTRIBUTE) deviceId: String, @PathVariable requestId: String): ApiResponse<PairingRequestResponse> =
+        ApiResponse.success(pairingService.cancel(deviceId, requestId))
 }

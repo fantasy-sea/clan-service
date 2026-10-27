@@ -15,11 +15,16 @@
 | `POST /api/v1/pairing/codes` | `{pairingCode,expiresAt}`；六位码有效 60 秒 |
 | `POST /api/v1/pairing/verify` | 请求 `{pairingCode}`；响应 `{requestId,expiresAt}` |
 | `POST /api/v1/pairing/requests/{requestId}/accept\|reject` | `{requestId,status,expiresAt,handledAt}` |
-| `GET /api/v1/bindings` | `[{deviceId,deviceName,platform,model,androidVersion,online,lastSeenAt,boundAt}]` |
+| `POST /api/v1/pairing/requests/{requestId}/cancel` | 仅请求方可取消 PENDING 请求；`{requestId,status,expiresAt,handledAt}`，status 为 `REJECTED` |
+| `GET /api/v1/bindings` | `[{deviceId,deviceName,platform,model,androidVersion,online,lastSeenAt,boundAt,createdAt}]` |
+| `GET /api/v1/bindings/{deviceId}` | 单条绑定，形状同上；仅限调用方自己的绑定，自身/未绑定/第三方返回 40201 |
+| `PATCH /api/v1/bindings/{deviceId}` | 请求 `{deviceName}`；更新已绑定对端设备的名称并返回最新单条绑定；自身/未绑定/第三方返回 40201 |
 | `DELETE /api/v1/bindings/{deviceId}` | `null` |
 | `POST /api/v1/sessions` | 请求 `{targetDeviceId}`；响应完整 `SessionResponse` |
 | `GET /api/v1/sessions/{sessionId}` | 仅会话双方可读 |
 | `POST /api/v1/sessions/{sessionId}/accept\|reject\|end` | 更新后的 `SessionResponse` |
+
+绑定查询的对端离线时仍返回 200（`online=false`），不返回 40004；自身/未绑定/第三方统一返回 40201。`createdAt` 是对端设备的注册时间。修改绑定设备名称会更新 `devices.device_name`，因此对端本机刷新后看到的也是新名称。
 
 `SessionResponse` 固定包含：
 
@@ -39,7 +44,7 @@ PENDING -> ACCEPTED
         -> EXPIRED
 ```
 
-只有目标设备可以接受或拒绝。接受会原子创建规范化绑定；重复处理不会恢复配对码。
+只有目标设备可以接受或拒绝。接受会原子创建规范化绑定；重复处理不会恢复配对码。请求方可以通过 `/cancel` 取消仍为 PENDING 的请求，取消复用 `REJECTED` 状态，不创建绑定；双方都会收到 `PAIRING_RESULT(REJECTED)`。
 
 远程会话：
 

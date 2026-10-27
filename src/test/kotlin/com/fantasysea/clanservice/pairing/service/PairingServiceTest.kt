@@ -1,5 +1,6 @@
 package com.fantasysea.clanservice.pairing.service
 
+import com.fantasysea.clanservice.binding.entity.DeviceBinding
 import com.fantasysea.clanservice.binding.repository.DeviceBindingRepository
 import com.fantasysea.clanservice.common.exception.BusinessException
 import com.fantasysea.clanservice.common.exception.ErrorCode
@@ -10,23 +11,31 @@ import com.fantasysea.clanservice.common.util.UlidGenerator
 import com.fantasysea.clanservice.device.entity.Device
 import com.fantasysea.clanservice.device.entity.DevicePlatform
 import com.fantasysea.clanservice.pairing.entity.PairingCode
+import com.fantasysea.clanservice.pairing.entity.PairingRequest
 import com.fantasysea.clanservice.pairing.entity.PairingRequestStatus
 import com.fantasysea.clanservice.pairing.repository.PairingCodeRepository
 import com.fantasysea.clanservice.pairing.repository.PairingRequestRepository
 import com.fantasysea.clanservice.pairing.security.PairingCodeGenerator
 import com.fantasysea.clanservice.pairing.security.PairingCodeHasher
 import com.fantasysea.clanservice.websocket.WsEventGateway
+import com.fantasysea.clanservice.websocket.WsOutboundMessage
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.Optional
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.ArgumentCaptor
+import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 
 class PairingServiceTest {
@@ -81,6 +90,85 @@ class PairingServiceTest {
         assertEquals(ErrorCode.DEVICE_OFFLINE, error.errorCode)
         assertNull(code.consumedAt)
         verify(requests, never()).save(org.mockito.ArgumentMatchers.any())
+    }
+
+    @Test
+    fun `requester cancels a pending request and both sides receive rejected result`() {
+        val request = pending()
+        stubCancelRequest(request)
+
+        val response = service.cancel("dev_requester", request.id)
+
+        assertEquals("REJECTED", response.status)
+        assertEquals(PairingRequestStatus.REJECTED, request.status)
+        assertNotNull(request.handledAt)
+        verify(bindings, never()).save(any(DeviceBinding::class.java))
+        assertResultEvent("dev_requester", "REJECTED")
+        assertResultEvent("dev_target", "REJECTED")
+    }
+
+    @Test
+    fun `target cannot cancel a request`() {
+        val request = pending()
+        stubCancelRequest(request)
+
+        val error = assertThrows(BusinessException::class.java) { service.cancel("dev_target", request.id) }
+
+        assertEquals(ErrorCode.PAIRING_REQUEST_NOT_ALLOWED, error.errorCode)
+        assertEquals(PairingRequestStatus.PENDING, request.status)
+        verifyNoInteractions(gateway)
+    }
+
+    @Test
+    fun `already handled request cannot be cancelled`() {
+        val request = pending(status = PairingRequestStatus.ACCEPTED)
+        stubCancelRequest(request)
+
+        val error = assertThrows(BusinessException::class.java) { service.cancel("dev_requester", request.id) }
+
+        assertEquals(ErrorCode.PAIRING_REQUEST_ALREADY_HANDLED, error.errorCode)
+        verifyNoInteractions(gateway)
+    }
+
+    @Test
+    fun `cancel after deadline expires the request and reports expiry`() {
+        val request = pending(expiresAt = NOW)
+        stubCancelRequest(request)
+
+        val error = assertThrows(BusinessException::class.java) { service.cancel("dev_requester", request.id) }
+
+        assertEquals(ErrorCode.PAIRING_REQUEST_EXPIRED, error.errorCode)
+        assertEquals(PairingRequestStatus.EXPIRED, request.status)
+        assertResultEvent("dev_requester", "EXPIRED")
+    }
+
+    private fun pending(
+        status: PairingRequestStatus = PairingRequestStatus.PENDING,
+        expiresAt: Instant = NOW.plusSeconds(60),
+    ) = PairingRequest(
+        id = "pairreq_01",
+        requesterDeviceId = "dev_requester",
+        targetDeviceId = "dev_target",
+        status = status,
+        expiresAt = expiresAt,
+        createdAt = NOW.minusSeconds(1),
+    )
+
+    private fun stubCancelRequest(request: PairingRequest) {
+        `when`(requests.findById(request.id)).thenReturn(Optional.of(request))
+        `when`(locks.lockPair(request.requesterDeviceId, request.targetDeviceId))
+            .thenReturn(device(request.requesterDeviceId) to device(request.targetDeviceId))
+        `when`(requests.findByIdForUpdate(request.id)).thenReturn(request)
+    }
+
+    private fun assertResultEvent(deviceId: String, result: String) {
+        val event = ArgumentCaptor.forClass(WsOutboundMessage::class.java)
+        verify(gateway).send(
+            eq(deviceId) ?: deviceId,
+            event.capture() ?: WsOutboundMessage("unused", timestamp = 0),
+        )
+        assertEquals("PAIRING_RESULT", event.value.type)
+        assertEquals(result, (event.value.payload as Map<*, *>)["result"])
     }
 
     private fun code(target: String) = PairingCode(

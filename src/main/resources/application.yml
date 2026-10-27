@@ -17,6 +17,9 @@ spring:
     open-in-view: false
     properties:
       hibernate:
+        # Hibernate 7 默认按 MySQL 8 生成 `FOR UPDATE OF <alias>`，目标库是 MySQL 5.7
+        # （不支持该语法），因此显式使用 5.7 兼容方言，否则所有悲观锁查询都会 1064。
+        dialect: com.fantasysea.clanservice.common.persistence.MySQL57Dialect
         jdbc:
           time_zone: UTC
         type:

@@ -61,6 +61,29 @@ class PairingControllerTest {
     }
 
     @Test
+    fun `requester cancel returns rejected request envelope`() {
+        `when`(pairingService.cancel(DEVICE_ID, "pairreq_01"))
+            .thenReturn(PairingRequestResponse("pairreq_01", "REJECTED", EXPIRES, EXPIRES))
+
+        mvc.perform(post("/api/v1/pairing/requests/pairreq_01/cancel").header("Authorization", "Bearer token"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.code").value(0))
+            .andExpect(jsonPath("$.data.requestId").value("pairreq_01"))
+            .andExpect(jsonPath("$.data.status").value("REJECTED"))
+    }
+
+    @Test
+    fun `non requester cancel returns forbidden envelope`() {
+        `when`(pairingService.cancel(DEVICE_ID, "pairreq_01"))
+            .thenThrow(BusinessException(ErrorCode.PAIRING_REQUEST_NOT_ALLOWED))
+
+        mvc.perform(post("/api/v1/pairing/requests/pairreq_01/cancel").header("Authorization", "Bearer token"))
+            .andExpect(status().isForbidden)
+            .andExpect(jsonPath("$.code").value(40108))
+            .andExpect(jsonPath("$.data").value(nullValue()))
+    }
+
+    @Test
     fun `verify rejects a non six digit code before service`() {
         mvc.perform(
             post("/api/v1/pairing/verify")
