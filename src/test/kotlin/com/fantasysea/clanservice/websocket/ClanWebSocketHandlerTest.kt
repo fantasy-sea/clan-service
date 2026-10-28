@@ -38,7 +38,7 @@ class ClanWebSocketHandlerTest {
             `when`(registry.register("dev_1", session)).thenReturn(false)
             val handler = ClanWebSocketHandler(
                 mapper, devices, tokens, registry, presence, InMemoryRateLimiter(CLOCK),
-                ConcurrentTaskScheduler(executor), CLOCK,
+                ConcurrentTaskScheduler(executor), CLOCK, mock(WsMessageRouter::class.java),
             )
 
             handler.afterConnectionEstablished(session)
@@ -70,6 +70,7 @@ class ClanWebSocketHandlerTest {
                 mapper, mock(DeviceRepository::class.java), mock(DeviceTokenService::class.java),
                 registry, mock(PresenceService::class.java),
                 InMemoryRateLimiter(CLOCK), ConcurrentTaskScheduler(executor), CLOCK,
+                mock(WsMessageRouter::class.java),
             )
 
             handler.afterConnectionEstablished(session)
@@ -83,6 +84,53 @@ class ClanWebSocketHandlerTest {
             assertEquals("AUTH_FAILED", event.value.type)
             assertFalse(event.value.payload.toString().contains("secret-marker"))
             verify(session).close(org.mockito.ArgumentMatchers.argThat<CloseStatus> { it.getCode() == 1008 })
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `authenticated P4 frame is routed and error is returned on the same connection`() {
+        val executor = Executors.newSingleThreadScheduledExecutor()
+        try {
+            val mapper = JsonMapper.builder().build()
+            val devices = mock(DeviceRepository::class.java)
+            val tokens = mock(DeviceTokenService::class.java)
+            val registry = mock(WebSocketConnectionRegistry::class.java)
+            val presence = mock(PresenceService::class.java)
+            val router = mock(WsMessageRouter::class.java)
+            val session = session()
+            `when`(tokens.hash("raw-token")).thenReturn("hash")
+            `when`(devices.findByDeviceTokenHash("hash")).thenReturn(
+                Device("dev_1", "phone", DevicePlatform.ANDROID, deviceTokenHash = "hash"),
+            )
+            `when`(registry.register("dev_1", session)).thenReturn(false)
+            `when`(registry.deviceId(session)).thenReturn("dev_1")
+            val error = WsOutboundMessage(
+                "ERROR", requestId = "c1", sessionId = "s1", timestamp = 0,
+                payload = mapOf("code" to "INVALID_PARAMETER"),
+            )
+            `when`(router.route("dev_1", "CONTROL", "c1", "s1", mapper.readTree("{}"))).thenReturn(error)
+            val handler = ClanWebSocketHandler(
+                mapper, devices, tokens, registry, presence, InMemoryRateLimiter(CLOCK),
+                ConcurrentTaskScheduler(executor), CLOCK, router,
+            )
+
+            handler.afterConnectionEstablished(session)
+            handler.handleMessage(session, TextMessage(
+                "{\"type\":\"AUTH\",\"requestId\":\"a1\",\"payload\":{\"deviceToken\":\"raw-token\"}}",
+            ))
+            handler.handleMessage(session, TextMessage(
+                "{\"type\":\"CONTROL\",\"requestId\":\"c1\",\"sessionId\":\"s1\",\"payload\":{}}",
+            ))
+
+            val event = ArgumentCaptor.forClass(WsOutboundMessage::class.java)
+            verify(registry).send(
+                org.mockito.Mockito.eq(session) ?: session,
+                event.capture() ?: WsOutboundMessage("unused", timestamp = 0),
+            )
+            assertEquals("ERROR", event.value.type)
+            assertEquals("s1", event.value.sessionId)
         } finally {
             executor.shutdownNow()
         }

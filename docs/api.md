@@ -49,13 +49,15 @@ PENDING -> ACCEPTED
 远程会话：
 
 ```text
-REQUESTING -> CONNECTING -> CONNECTED (P4 预留)
+REQUESTING -> CONNECTING -> CONNECTED
      |            |            |
      +-> REJECTED +-----------> ENDED
      +------------------------> FAILED
 ```
 
 创建会话要求双方已绑定、都有可投递 WebSocket，且任一方都没有活动会话。只有被控端可接受/拒绝；任一参与方可结束非终态会话。请求阶段 60 秒超时，连接阶段 120 秒超时。
+
+`CONNECTED` 由 WebSocket `SESSION_CONNECTED` 触发（见 `docs/websocket.md`），不因 SDP offer/answer 交换成功自动置位。P4 的 WebRTC 信令和远程控制均为 WebSocket 消息，不新增 REST 接口；控制权在 MVP 中属于 `controllerDeviceId`，`SessionResponse` 结构不变。
 
 ## 错误码
 
@@ -83,7 +85,8 @@ REQUESTING -> CONNECTING -> CONNECTED (P4 预留)
 | 40304 | 409 | `SESSION_CONFLICT` |
 | 40305 | 409 | `DEVICES_NOT_BOUND` |
 | 40306 | 410 | `SESSION_REQUEST_EXPIRED` |
-| 40307 | 403 | `CONTROL_NOT_ALLOWED`（P4 预留） |
+| 40307 | 403 | `CONTROL_NOT_ALLOWED` |
+| 40308 | 410 | `SESSION_CONNECT_TIMEOUT` |
 | 50001 | 500 | `INTERNAL_ERROR` |
 
 限流：注册为每 IP 5 次/小时；配对验证为每设备 5 次/分钟且每 IP 20 次/分钟；WebSocket AUTH 为每 IP 10 次/分钟。

@@ -104,6 +104,57 @@ class SessionService(
         return SessionResponse.from(session)
     }
 
+    /**
+     * P4：由任一参与方在 WebRTC 真正连通后调用。
+     * 首次 CONNECTING -> CONNECTED 并向双方广播 SESSION_CONNECTED；重复调用幂等，
+     * 不重复广播。连接截止时间或对端可达性失败会推进到 FAILED。
+     */
+    @Transactional(noRollbackFor = [BusinessException::class])
+    fun connect(deviceId: String, sessionId: String): SessionResponse {
+        val session = lockSessionAndDevices(sessionId)
+        requireParticipant(session, deviceId)
+        if (session.status == RemoteSessionStatus.CONNECTED) return SessionResponse.from(session)
+        if (session.status != RemoteSessionStatus.CONNECTING) throw BusinessException(ErrorCode.SESSION_INVALID_STATE)
+        val now = clock.instant()
+        if (session.connectExpiresAt?.let { now.isBefore(it) } != true) {
+            fail(session, now, "CONNECT_TIMEOUT")
+            afterCommit.execute {
+                sendBoth(session, event("SESSION_FAILED", session, mapOf("reason" to "CONNECT_TIMEOUT")))
+            }
+            throw BusinessException(ErrorCode.SESSION_CONNECT_TIMEOUT)
+        }
+        val peerId = if (deviceId == session.controllerDeviceId) session.controlledDeviceId else session.controllerDeviceId
+        if (!gateway.isReachable(peerId)) {
+            fail(session, now, "DEVICE_OFFLINE")
+            afterCommit.execute {
+                sendBoth(session, event("SESSION_FAILED", session, mapOf("reason" to "DEVICE_OFFLINE")))
+            }
+            throw BusinessException(ErrorCode.DEVICE_OFFLINE)
+        }
+        session.status = RemoteSessionStatus.CONNECTED
+        session.connectedAt = now
+        afterCommit.execute {
+            sendBoth(session, event("SESSION_CONNECTED", session, mapOf("connectedAt" to session.connectedAt)))
+        }
+        return SessionResponse.from(session)
+    }
+
+    /**
+     * P4：校验实时消息的会话归属与状态，只读，不修改状态。
+     * 控制/信令服务用返回的 [SessionRelay] 判断方向并选择转发目标。
+     */
+    @Transactional(readOnly = true)
+    fun requireRelay(
+        deviceId: String,
+        sessionId: String,
+        allowed: Set<RemoteSessionStatus>,
+    ): SessionRelay {
+        val session = sessionRepository.findById(sessionId).orElseThrow { BusinessException(ErrorCode.SESSION_NOT_FOUND) }
+        if (!session.involves(deviceId)) throw BusinessException(ErrorCode.SESSION_NOT_ALLOWED)
+        if (session.status !in allowed) throw BusinessException(ErrorCode.SESSION_INVALID_STATE)
+        return SessionRelay(session.id, session.controllerDeviceId, session.controlledDeviceId, session.status)
+    }
+
     @Transactional(noRollbackFor = [BusinessException::class])
     fun reject(deviceId: String, sessionId: String): SessionResponse {
         val session = lockSessionAndDevices(sessionId)

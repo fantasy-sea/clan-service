@@ -30,6 +30,7 @@ class ClanWebSocketHandler(
     private val rateLimiter: InMemoryRateLimiter,
     private val scheduler: TaskScheduler,
     private val clock: Clock,
+    private val router: WsMessageRouter,
 ) : TextWebSocketHandler() {
     private val log = LoggerFactory.getLogger(ClanWebSocketHandler::class.java)
 
@@ -84,7 +85,12 @@ class ClanWebSocketHandler(
                 registry.send(deviceId, WsOutboundMessage("PONG", requestId = requestId, timestamp = clock.millis(), payload = emptyMap<String, Any>()))
             }
             "AUTH" -> sendError(session, requestId, "ALREADY_AUTHENTICATED", "Connection is already authenticated")
-            else -> sendError(session, requestId, "UNSUPPORTED_MESSAGE", "Unsupported message type")
+            else -> {
+                val deviceId = registry.deviceId(session) ?: return
+                val sessionId = node.path("sessionId").asText().takeIf { it.isNotBlank() }
+                router.route(deviceId, type, requestId, sessionId, node.path("payload"))
+                    ?.let { sendDirect(session, it) }
+            }
         }
     }
 

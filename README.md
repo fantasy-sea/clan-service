@@ -1,6 +1,6 @@
 # clan-service — 家庭远程助手后端
 
-`clan-service` 是双 Android 设备远程协助的单实例后端。本期已实现 P0–P3：设备、配对、绑定、在线状态和远程会话协商；WebRTC、TURN、远程输入及命令消息属于 P4，暂未实现。
+`clan-service` 是双 Android 设备远程协助的单实例后端。本期已实现 P0–P4：设备、配对、绑定、在线状态、远程会话协商，以及 WebRTC 信令（offer/answer/ICE）、会话 `CONNECTED` 状态和远程控制消息转发。服务端只做信令与控制转发，视频媒体仍由两端 WebRTC 直接传输（必要时经独立 TURN）。
 
 仓库根目录的早期设计稿仅作历史参考；事件名和对外契约以本 README 及 `docs/` 为准。
 
@@ -16,6 +16,7 @@
 
 - [REST、状态机与错误码](docs/api.md)
 - [WebSocket 协议](docs/websocket.md)
+- [WebRTC 信令与控制协议](docs/webrtc.md)
 - [生产部署与 TLS](docs/deployment.md)
 - [双 Android 联调验收](docs/android-acceptance.md)
 
@@ -59,9 +60,17 @@ $env:SPRING_PROFILES_ACTIVE='local'
 | 会话 | `POST /api/v1/sessions`、`GET /api/v1/sessions/{sessionId}` |
 | 会话操作 | `POST /api/v1/sessions/{sessionId}/accept\|reject\|end` |
 | 实时连接 | `ws://localhost:8080/ws` |
+| P4 信令/控制 | WebSocket `WEBRTC_OFFER/ANSWER`、`ICE_CANDIDATE`、`SESSION_CONNECTED`、`CONTROL`、`CONTROL_RESULT`、`PERMISSION_STATUS`，见 `docs/websocket.md` |
 
-设备令牌仅在注册时返回一次，数据库只存 SHA-256。配对码明文也不入库，只保存 HMAC-SHA256；日志不得写入 Authorization、AUTH payload、完整 WebSocket 帧、配对码或未来的 SDP/ICE/控制参数。
+设备令牌仅在注册时返回一次，数据库只存 SHA-256。配对码明文也不入库，只保存 HMAC-SHA256；日志不得写入 Authorization、AUTH payload、完整 WebSocket 帧、配对码、SDP、ICE 或控制参数。
 
-## P4 边界
+## P4 实时能力
 
-当前保留 `CONNECTED` 状态和 `CONTROL_RESULT.scope=COMMAND` 契约位置，但不接受 P4 消息。未知 WebSocket 消息只返回通用协议错误且不会回显载荷。
+- `WEBRTC_OFFER` / `WEBRTC_ANSWER` / `ICE_CANDIDATE`：服务端只校验会话、方向和大小后转发，不解析、不保存 SDP/ICE。
+- `SESSION_CONNECTED`：任一参与方在 WebRTC 真正连通后发送；服务端把会话从 `CONNECTING` 推进到 `CONNECTED`，并向双方广播。重复发送幂等。
+- `CONTROL`：仅 `CONNECTED` 且控制方（MVP = `controllerDeviceId`）可发；支持 `TAP/SWIPE/BACK/HOME/RECENTS`，坐标归一化到 `0.0~1.0`。
+- `CONTROL_RESULT` / `PERMISSION_STATUS`：仅被控端可回传，分别用于命令执行结果和权限状态展示。
+- 服务端不接收、不保存、不转发视频媒体；不使用 WebSocket 二进制帧；TURN 独立部署。
+- 控制/信令按设备限流，错误统一返回 `ERROR`，不回显 payload。未知 WebSocket 消息只返回通用协议错误。
+
+协议细节、方向矩阵和验收步骤见 [WebRTC 信令与控制协议](docs/webrtc.md)。

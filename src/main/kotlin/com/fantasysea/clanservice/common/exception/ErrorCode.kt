@@ -3,7 +3,7 @@ package com.fantasysea.clanservice.common.exception
 import org.springframework.http.HttpStatus
 
 /**
- * P0-P3 公共业务错误码；40307 为 P4 命令权限预留。
+ * P0-P4 公共业务错误码；40307/40308 用于 P4 命令权限与会话连接阶段。
  */
 enum class ErrorCode(
     val code: Int,
@@ -33,5 +33,6 @@ enum class ErrorCode(
     DEVICES_NOT_BOUND(40305, HttpStatus.CONFLICT, "Devices are not bound"),
     SESSION_REQUEST_EXPIRED(40306, HttpStatus.GONE, "Session request expired"),
     CONTROL_NOT_ALLOWED(40307, HttpStatus.FORBIDDEN, "Control not allowed"),
+    SESSION_CONNECT_TIMEOUT(40308, HttpStatus.GONE, "Session connection timed out"),
     INTERNAL_ERROR(50001, HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error"),
 }

@@ -89,6 +89,61 @@ class WebSocketWorkflowIT {
             assertEquals("ACCEPTED", second.await("CONTROL_RESULT").path("payload").path("result").asText())
             second.await("SESSION_STARTED")
 
+            // P4: WebRTC signaling is relayed verbatim (except server-owned fields).
+            first.send("WEBRTC_OFFER", "sig-offer", session.sessionId, mapOf("sdp" to "v=0-offer"))
+            val offer = second.await("WEBRTC_OFFER")
+            assertEquals("sig-offer", offer.path("requestId").asText())
+            assertEquals("v=0-offer", offer.path("payload").path("sdp").asText())
+
+            second.send("WEBRTC_ANSWER", "sig-answer", session.sessionId, mapOf("sdp" to "v=0-answer"))
+            val answer = first.await("WEBRTC_ANSWER")
+            assertEquals("sig-answer", answer.path("requestId").asText())
+            assertEquals("v=0-answer", answer.path("payload").path("sdp").asText())
+
+            first.send(
+                "ICE_CANDIDATE", "ice-1", session.sessionId,
+                mapOf("candidate" to "candidate:1 1 UDP 1 192.0.2.1 5000 typ host", "sdpMid" to "0", "sdpMLineIndex" to 0),
+            )
+            val controllerCandidate = second.await("ICE_CANDIDATE")
+            assertEquals("candidate:1 1 UDP 1 192.0.2.1 5000 typ host", controllerCandidate.path("payload").path("candidate").asText())
+            assertEquals(0, controllerCandidate.path("payload").path("sdpMLineIndex").asInt())
+
+            second.send("ICE_CANDIDATE", "ice-2", session.sessionId, mapOf("candidate" to "", "sdpMid" to "audio"))
+            val agentCandidate = first.await("ICE_CANDIDATE")
+            assertEquals("", agentCandidate.path("payload").path("candidate").asText())
+
+            second.send(
+                "PERMISSION_STATUS", null, session.sessionId,
+                mapOf("screenCapture" to true, "accessibility" to false),
+            )
+            val permission = first.await("PERMISSION_STATUS")
+            assertEquals(true, permission.path("payload").path("screenCapture").asBoolean())
+            assertEquals(false, permission.path("payload").path("accessibility").asBoolean())
+
+            second.send("SESSION_CONNECTED", null, session.sessionId)
+            first.await("SESSION_CONNECTED")
+            second.await("SESSION_CONNECTED")
+            assertEquals("CONNECTED", sessionService.get(firstId, session.sessionId).status)
+
+            // Only the control owner may send commands; the agent gets a protocol error.
+            second.send("CONTROL", "ctl-denied", session.sessionId, mapOf("action" to "BACK"))
+            assertEquals("CONTROL_NOT_ALLOWED", second.await("ERROR").path("payload").path("code").asText())
+
+            first.send("CONTROL", "ctl-1", session.sessionId, mapOf("action" to "TAP", "x" to 0.5, "y" to 0.25))
+            val control = second.await("CONTROL")
+            assertEquals("ctl-1", control.path("requestId").asText())
+            assertEquals("TAP", control.path("payload").path("action").asText())
+            assertEquals(0.5, control.path("payload").path("x").asDouble())
+            assertEquals(0.25, control.path("payload").path("y").asDouble())
+
+            second.send(
+                "CONTROL_RESULT", "ctl-1", session.sessionId,
+                mapOf("scope" to "COMMAND", "result" to "OK"),
+            )
+            val result = first.await("CONTROL_RESULT")
+            assertEquals("COMMAND", result.path("payload").path("scope").asText())
+            assertEquals("OK", result.path("payload").path("result").asText())
+
             sessionService.end(firstId, session.sessionId)
             first.await("SESSION_ENDED")
             second.await("SESSION_ENDED")
@@ -155,6 +210,16 @@ class WebSocketWorkflowIT {
         val errors: LinkedBlockingQueue<Throwable>,
         val mapper: ObjectMapper,
     ) {
+        fun send(type: String, requestId: String?, sessionId: String?, payload: Map<String, Any?> = emptyMap()) {
+            val frame = buildMap<String, Any?> {
+                put("type", type)
+                if (requestId != null) put("requestId", requestId)
+                if (sessionId != null) put("sessionId", sessionId)
+                put("payload", payload)
+            }
+            socket.sendText(mapper.writeValueAsString(frame), true).join()
+        }
+
         fun await(type: String): JsonNode {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
             while (System.nanoTime() < deadline) {

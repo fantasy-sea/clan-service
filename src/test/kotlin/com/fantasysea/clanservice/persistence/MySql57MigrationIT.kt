@@ -188,6 +188,34 @@ class MySql57MigrationIT {
         )
     }
 
+    @Test
+    fun `session reaches connected and persists on MySQL 5_7`() {
+        val suffix = System.nanoTime().toString()
+        val controller = "dev_connect_a_$suffix"
+        val controlled = "dev_connect_b_$suffix"
+        insertDevice(controller, "connect-token-a-$suffix")
+        insertDevice(controlled, "connect-token-b-$suffix")
+        val (low, high) = if (controller < controlled) controller to controlled else controlled to controller
+        jdbc.update(
+            "insert into device_bindings(device_low_id, device_high_id, bound_at) values (?, ?, current_timestamp(6))",
+            low, high,
+        )
+
+        val session = sessionService.create(controller, controlled)
+        sessionService.accept(controlled, session.sessionId)
+        val connected = sessionService.connect(controller, session.sessionId)
+
+        assertEquals("CONNECTED", connected.status)
+        assertEquals(
+            1,
+            jdbc.queryForObject(
+                "select count(*) from remote_sessions where id = ? and status = 'CONNECTED' and connected_at is not null",
+                Int::class.java,
+                session.sessionId,
+            ),
+        )
+    }
+
     private fun runConcurrently(first: () -> Any, second: () -> Any): List<Throwable?> {
         val executor = Executors.newFixedThreadPool(2)
         return try {
